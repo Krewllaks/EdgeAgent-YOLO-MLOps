@@ -1,0 +1,10 @@
+names:
+  - screw
+  - missing_screw
+  - missing_component
+
+# Roboflow COCO category name -> YOLO class id
+coco_to_yolo:
+  screw: 0
+  missing_screw: 1
+  missing_component: 2

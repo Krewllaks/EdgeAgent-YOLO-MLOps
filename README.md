@@ -112,6 +112,29 @@ python scripts/export_tensorrt.py --half
 python scripts/export_tensorrt.py --dry-run  # config only
 ```
 
+## Phase 2 Preparation Utilities
+
+### Edge profiler (Jetson Orin Nano simulation)
+
+```bash
+python src/edge/profiler.py --model models/phase1_final_ca.pt --source data/processed/phase1_multiclass_v1/test/images
+```
+
+Output:
+
+- `reports/generated/edge_profile_latest.json`
+
+### Async VLM trigger (YOLO confidence based)
+
+```bash
+python src/edge/vlm_trigger.py --model models/phase1_final_ca.pt --source data/processed/phase1_multiclass_v1/test/images --conf-threshold 0.40
+```
+
+Outputs:
+
+- `reports/generated/vlm_trigger_events.jsonl`
+- `reports/generated/vlm_trigger_events.summary.json`
+
 ## Train Final Phase 1 (Optional Re-run)
 
 ```bash
@@ -142,3 +165,10 @@ Large/local data and training artifacts are intentionally excluded from git:
 - `data/processed/`, `runs/`, `mlruns/`, `*.pt`
 
 This keeps the repository lightweight and reproducible for team onboarding.
+
+## Additional Docs
+
+- `docs/STATUS_CURRENT.md` - final Sprint 1 status and artifact paths
+- `docs/STRATEGY.md` - technical decisions and Phase 2 trigger strategy
+- `docs/COLLABORATION_GUIDE.md` - teammate setup + MLflow usage
+- `docs/GPU_SETUP_WINDOWS.md` - CUDA 12.1 setup details
