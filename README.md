@@ -103,6 +103,15 @@ Simulate PaliGemma activation on low-confidence detections:
 python src/edge/vlm_trigger.py --model models/phase1_final_ca.pt --source data/processed/phase1_multiclass_v1/test/images --conf-threshold 0.40
 ```
 
+### 6) TensorRT Export (Edge Deployment)
+
+Export model to TensorRT FP16 engine for Jetson Orin Nano:
+
+```bash
+python scripts/export_tensorrt.py --half
+python scripts/export_tensorrt.py --dry-run  # config only
+```
+
 ## Train Final Phase 1 (Optional Re-run)
 
 ```bash

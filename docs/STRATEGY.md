@@ -129,7 +129,28 @@ Ana Hat (Hizli):                     VLM Hat (Yavas, Bagimsiz):
 
 ---
 
-## 5. TensorRT Optimizasyonu
+## 5. KRITIK RISK: Weak Labeling (Zayif Etiketleme)
+
+### Problem
+Augmented (coklanmis) verilerde tum goruntudeki kutu `(0.5, 0.5, 1.0, 1.0)`
+olarak (yani resmin tamami) etiketlendiginde:
+
+- YOLO, nesnenin arka plandan **ayrildigini** ogrenemez
+- Model "metal dokunun tamamini" hata olarak algilamaya baslar
+- Yuksek mAP raporu alditicildir cunku model resmin %100'unu eslestiriyor
+
+### Cozum
+- Coklanmis verilerdeki etiketler gozden gecirilmeli
+- Her augmented goruntude nesneyi **tam cevreleyen** (tight bounding box) kullanilmali
+- Mevcut veriler icin random sample alip manual kontrol yapilmali
+
+### Etki Degerlendirmesi
+- Eger tight bbox kullanildiysa: Sorun yok
+- Eger full-image bbox kullanildiysa: Etiketlerin duzeltilmesi **en oncelikli** is
+
+---
+
+## 6. TensorRT Optimizasyonu
 
 ### Neden Gerekli?
 - Fabrika hedefi: 200 urun/saniye -> frame basi 5ms butce
@@ -138,26 +159,66 @@ Ana Hat (Hizli):                     VLM Hat (Yavas, Bagimsiz):
 - Hala 5ms'nin ustunde olabilir -> batch processing veya multi-stream gerekebilir
 
 ### Plan
-1. `model.export(format="engine", half=True)` ile TensorRT FP16 export
+1. `python scripts/export_tensorrt.py --half` ile TensorRT FP16 export
 2. INT8 calibration icin test setinden 500 gorsel kullanilir
 3. Benchmark: TensorRT vs PyTorch latency karsilastirmasi
 4. Gerekirse: Model pruning veya daha kucuk backbone (YOLOv10-N)
 
+### Export Scripti
+`scripts/export_tensorrt.py` hazir. Kullanim:
+```bash
+python scripts/export_tensorrt.py --half              # FP16
+python scripts/export_tensorrt.py --int8 --half       # INT8 + FP16 fallback
+python scripts/export_tensorrt.py --dry-run           # Sadece config goster
+```
+
 ---
 
-## 6. Surekli Egitim (Continuous Training) Stratejisi
+## 7. Surekli Egitim (Continuous Training) Stratejisi
 
 ### Hedef
 Model, her hafta yeni gelen hatali verilerle otomatik fine-tune edilir.
 
 ### Planlanan Akis
-1. Operatorler yanlis tespitleri isaretler (dashboard butonu)
-2. Isaretlenen veriler `data/feedback/` klasorune toplanir
+1. Operatorler yanlis tespitleri isaretler (dashboard "Yanlis" butonu)
+2. Isaretlenen veriler `data/feedback/feedback_log.jsonl` dosyasina kaydedilir
 3. Haftalik cron job: Yeni veriyle incremental fine-tune
 4. Yeni model, eski modelle A/B testi yapilir (mAP karsilastirmasi)
 5. Basarili ise otomatik deploy, degilse eski model korunur
+
+### Active Learning Dongusu
+Dashboard'daki inference playground'da operator her tahmin icin
+"Dogru" / "Yanlis" butonlarina basar. Bu geri bildirim:
+- `data/feedback/feedback_log.jsonl` -> JSONL formatinda kaydedilir
+- Her hafta bu dosyadaki "incorrect" isareti olanlar fine-tune setine eklenir
+- FP analizi sayfasindan istatistikler izlenir
 
 ### MLOps Level 2 Hedefi
 - Egitim suresi: 4 saat -> 30 dakika (daha kucuk incremental set)
 - Otomatik pipeline: Data -> Train -> Validate -> Deploy
 - Model registry: MLflow ile versiyon takibi
+
+---
+
+## 8. Iyilestirme Oncelik Tablosu
+
+| Oncelik | Madde | Durum |
+|---------|-------|-------|
+| KRITIK | Weak label'leri tight bbox ile dogrula/duzelt | BEKLIYOR |
+| KRITIK | TensorRT FP16 export + benchmark | SCRIPT HAZIR |
+| YUKSEK | Dashboard inference playground | TAMAMLANDI |
+| YUKSEK | FP orneklerini kaydet + analiz et | TAMAMLANDI |
+| YUKSEK | Operator geri bildirim (Active Learning) | TAMAMLANDI |
+| ORTA | Isik degisimi concept drift testi | PHASE 2 |
+| ORTA | CA Neck ablation deneyi | PHASE 2 |
+| ORTA | PaliGemma async zamanlama olcumu | PHASE 2 |
+| DUSUK | DagsHub/W&B entegrasyonu | PHASE 3 |
+| DUSUK | Setup.bat tek tikla kurulum | PHASE 3 |
+| DUSUK | Model drift alarm sistemi | PHASE 3 |
+
+### Elenen/Ertelenen Maddeler (Gerekce)
+- **Hardcoded paths**: Sorun yok. Tum dosyalar `Path(__file__)` kullaniyor.
+- **pip freeze**: Dev repo icin minimum version pin dogru yaklasim.
+- **Early stopping patience**: Zaten `patience=25` ayarli.
+- **VRAM stres testi**: Profiler zaten bellek tahmini yapiyor.
+- **Modulerlik (OOP)**: Train script 250 satir, henuz bolunmeye gerek yok.
