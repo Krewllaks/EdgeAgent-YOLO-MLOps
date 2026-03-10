@@ -1,0 +1,66 @@
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# IDE and notebooks
+.vscode/
+.idea/
+.ipynb_checkpoints/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Env and secrets
+.env
+.env.*
+
+# Local datasets (large/private - do not commit)
+erdogan1/
+erdogan2/
+roboflowetiketlenen/
+coklanmis/
+data/raw/
+data/interim/
+data/processed/
+data/external/
+
+# Training logs and experiment outputs
+runs/
+mlruns/
+wandb/
+logs/
+
+# Model and export artifacts
+models/*.pt
+*.pt
+*.onnx
+*.engine
+*.tflite
+*.torchscript
+
+# Generated report artifacts
+reports/generated/*
+!reports/generated/.gitkeep
+
+# Local inspection dump
+dosya_yapisi.md
+dosya_yapisi.txt

@@ -1,0 +1,21 @@
+# Core
+numpy>=1.26
+pillow>=10.0
+pyyaml>=6.0
+tqdm>=4.66
+matplotlib>=3.8
+streamlit>=1.55
+
+# Training/inference stack
+ultralytics>=8.4.0
+
+# CUDA 12.1 PyTorch (Windows target)
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1+cu121; platform_system == "Windows"
+torchvision==0.20.1+cu121; platform_system == "Windows"
+torchaudio==2.5.1+cu121; platform_system == "Windows"
+
+# Fallback for non-Windows environments
+torch>=2.5.0; platform_system != "Windows"
+torchvision>=0.20.0; platform_system != "Windows"
+torchaudio>=2.5.0; platform_system != "Windows"
