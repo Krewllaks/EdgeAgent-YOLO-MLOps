@@ -42,8 +42,27 @@ Sources:
 - GPU verification helper: `scripts/check_gpu.py`
 - Setup guide: `docs/GPU_SETUP_WINDOWS.md`
 
+## Phase 2 Preparation (In Progress)
+
+New scripts and documentation added:
+
+- `src/models/coordatt.py` - Shared CoordAtt module (single source of truth)
+- `src/edge/profiler.py` - Jetson Orin Nano latency estimator
+- `src/edge/vlm_trigger.py` - PaliGemma async trigger logic
+- `docs/STRATEGY.md` - Technical strategy (competitive diff, leakage, async VLM)
+- `docs/COLLABORATION_GUIDE.md` - Team onboarding and MLflow setup
+
+Key decisions documented:
+- TensorRT FP16/INT8 optimization required for 200 products/s target
+- VLM trigger threshold: confidence < 0.40
+- No new class for "crooked screw" (VLM handles edge cases)
+- Dashboard-based operator notification (not SMS/email)
+- Weekly continuous training planned
+
 ## Next Step (Phase 2)
 
-1. Integrate VLM trigger flow after low-confidence YOLO detections.
-2. Add root-cause natural language reasoning outputs (PaliGemma layer).
-3. Add edge profiler and continuous monitoring/retraining loop hardening.
+1. Integrate actual PaliGemma 3B model into VLM worker
+2. TensorRT export and Jetson Orin Nano benchmark
+3. Continuous training pipeline (weekly auto fine-tune)
+4. Concept drift testing (lighting variation)
+5. Operator feedback loop (dashboard marking)

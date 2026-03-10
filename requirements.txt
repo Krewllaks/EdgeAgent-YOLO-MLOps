@@ -9,6 +9,9 @@ streamlit>=1.55
 # Training/inference stack
 ultralytics>=8.4.0
 
+# Experiment tracking
+mlflow>=2.13
+
 # CUDA 12.1 PyTorch (Windows target)
 --extra-index-url https://download.pytorch.org/whl/cu121
 torch==2.5.1+cu121; platform_system == "Windows"

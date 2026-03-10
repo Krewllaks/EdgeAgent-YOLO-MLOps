@@ -3,89 +3,15 @@ import csv
 from datetime import datetime
 from pathlib import Path
 import shutil
+import sys
 from typing import Optional
 
 import torch
-import torch.nn as nn
-
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
-
-class HSigmoid(nn.Module):
-    def __init__(self, inplace: bool = True):
-        super().__init__()
-        self.relu = nn.ReLU6(inplace=inplace)
-
-    def forward(self, x):
-        return self.relu(x + 3.0) / 6.0
-
-
-class HSwish(nn.Module):
-    def __init__(self, inplace: bool = True):
-        super().__init__()
-        self.hsigmoid = HSigmoid(inplace=inplace)
-
-    def forward(self, x):
-        return x * self.hsigmoid(x)
-
-
-class CoordAtt(nn.Module):
-    def __init__(self, inp: int = 0, reduction: int = 32):
-        super().__init__()
-        self.inp = int(inp) if inp else None
-        self.reduction = max(1, int(reduction))
-
-        self.conv1 = None
-        self.bn1 = None
-        self.act = HSwish()
-        self.conv_h = None
-        self.conv_w = None
-
-    def _build(self, channels: int, device: torch.device, dtype: torch.dtype) -> None:
-        mip = max(8, channels // self.reduction)
-        self.conv1 = nn.Conv2d(channels, mip, kernel_size=1, stride=1, padding=0).to(
-            device=device, dtype=dtype
-        )
-        self.bn1 = nn.BatchNorm2d(mip).to(device=device, dtype=dtype)
-        self.conv_h = nn.Conv2d(mip, channels, kernel_size=1, stride=1, padding=0).to(
-            device=device, dtype=dtype
-        )
-        self.conv_w = nn.Conv2d(mip, channels, kernel_size=1, stride=1, padding=0).to(
-            device=device, dtype=dtype
-        )
-        self.inp = channels
-
-    def _ensure_built(self, x) -> None:
-        channels = int(x.shape[1])
-        if self.conv1 is None or self.inp != channels:
-            self._build(channels, x.device, x.dtype)
-
-    def forward(self, x):
-        self._ensure_built(x)
-        assert self.conv1 is not None
-        assert self.bn1 is not None
-        assert self.conv_h is not None
-        assert self.conv_w is not None
-
-        identity = x
-        _, _, h, w = x.size()
-
-        x_h = x.mean(dim=3, keepdim=True)
-        x_w = x.mean(dim=2, keepdim=True).permute(0, 1, 3, 2)
-
-        y = torch.cat([x_h, x_w], dim=2)
-        y = self.conv1(y)
-        y = self.bn1(y)
-        y = self.act(y)
-
-        x_h, x_w = torch.split(y, [h, w], dim=2)
-        x_w = x_w.permute(0, 1, 3, 2)
-
-        a_h = torch.sigmoid(self.conv_h(x_h))
-        a_w = torch.sigmoid(self.conv_w(x_w))
-
-        return identity * a_h * a_w
+from src.models.coordatt import CoordAtt, HSigmoid, HSwish, register_coordatt  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -146,9 +72,11 @@ def resolve_device(device_arg: str) -> str:
 
 
 def register_coordatt_module() -> None:
-    import ultralytics.nn.tasks as tasks
-
-    setattr(tasks, "CoordAtt", CoordAtt)
+    register_coordatt()
+    # Also register in __main__ for backward-compatible checkpoint loading
+    import __main__
+    for cls in (HSigmoid, HSwish, CoordAtt):
+        setattr(__main__, cls.__name__, cls)
 
 
 def parse_map50_from_csv(results_csv: Path) -> Optional[float]:

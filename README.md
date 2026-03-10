@@ -80,8 +80,28 @@ streamlit run src/ui/sprint1_dashboard.py
 Dashboard includes:
 
 - class balance before/after visualization
-- CA architecture explanation
-- train distribution KPIs and generated report artifacts
+- Neden CA kullandik? (Coordinate Attention rationale)
+- MLflow experiment tracking integration
+- Phase 2 VLM async trigger strategy (visual flow diagram)
+- Edge profiler results (Jetson Orin Nano estimate)
+- Sprint 1 decision snapshot
+- Operator controls (emergency stop placeholder)
+
+### 4) Edge Profiler (Phase 2 Prep)
+
+Benchmark model latency and estimate Jetson Orin Nano performance:
+
+```bash
+python src/edge/profiler.py --model models/phase1_final_ca.pt --source data/processed/phase1_multiclass_v1/test/images
+```
+
+### 5) VLM Trigger Test (Phase 2 Prep)
+
+Simulate PaliGemma activation on low-confidence detections:
+
+```bash
+python src/edge/vlm_trigger.py --model models/phase1_final_ca.pt --source data/processed/phase1_multiclass_v1/test/images --conf-threshold 0.40
+```
 
 ## Train Final Phase 1 (Optional Re-run)
 
@@ -96,10 +116,13 @@ Post-training automation:
 
 ## Repository Layout
 
-- `src/` - core code (`data`, `ui`, future `edge`/`agent` modules)
+- `src/models/` - shared modules (CoordAtt attention layer)
+- `src/edge/` - edge deployment tools (profiler, VLM trigger)
+- `src/ui/` - Streamlit dashboard
+- `src/data/` - data processing and augmentation analysis
 - `scripts/` - operational scripts (prepare, train, infer, gpu check)
 - `configs/` - model and dataset configs
-- `docs/` - setup guides and current project status
+- `docs/` - strategy, collaboration guide, setup guides, status
 - `reports/` - reproducible reports (`generated/` ignored in git)
 
 ## Collaboration Notes
