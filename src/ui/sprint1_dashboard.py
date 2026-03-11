@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import cv2
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
@@ -762,11 +763,288 @@ def page_operator():
         })
 
 
+# ── Page: Edge Enhancement ──────────────────────────────────────────
+
+def page_edge_enhancement():
+    st.header("Edge Enhancement (Canny Onisleme)")
+
+    st.markdown(
+        "Metal yuzey yansimalarini bastirmak icin Canny kenar haritasi "
+        "orijinal goruntuyle harmanlanir. Bu, YOLO'nun parlak yuzeyler "
+        "uzerindeki vida detaylarini daha iyi algilamasini saglar."
+    )
+
+    col_upload, col_params = st.columns([3, 1])
+
+    with col_params:
+        st.markdown("**Parametreler**")
+        alpha = st.slider("Alpha (orijinal agirlik)", 0.3, 1.0, 0.7, 0.05,
+                          help="1.0 = sadece orijinal, 0.3 = guclu kenar karistirma")
+        canny_low = st.slider("Canny Alt Esik", 10, 150, 50, 10)
+        canny_high = st.slider("Canny Ust Esik", 50, 300, 150, 10)
+
+    with col_upload:
+        uploaded = st.file_uploader(
+            "Goruntu yukle",
+            type=["jpg", "jpeg", "png", "bmp"],
+            key="edge_upload",
+        )
+
+    if not uploaded:
+        st.info("Bir goruntu yukleyin, edge enhancement onizlemesini gorun.")
+
+        # Show example explanation
+        with st.expander("Nasil Calisir?"):
+            st.markdown("""
+**Adimlar:**
+1. Orijinal goruntu grayscale'e cevrilir
+2. Canny kenar dedektoru uygulanir (alt/ust esik)
+3. Kenar haritasi RGB'ye cevrilir
+4. `blended = alpha * original + (1-alpha) * edges`
+
+**Parametreler:**
+- **Alpha**: Dusuk deger = kenarlar daha belirgin, yuksek deger = orijinale yakin
+- **Canny Alt Esik**: Dusuk = daha fazla kenar, yuksek = sadece guclu kenarlar
+- **Canny Ust Esik**: Kenar baglama esigi (genelde alt esigin 2-3 kati)
+
+**Kullanim Alani:**
+- Parlak metal yuzeyler (vida yansimalari)
+- Dusuk kontrast goruntuler
+- Arka plan-nesne ayirimi zayif durumlar
+""")
+        return
+
+    # Process uploaded image
+    tmp_path = REPORTS_DIR / f"_tmp_edge_{uploaded.name}"
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_path.write_bytes(uploaded.getvalue())
+
+    try:
+        sys.path.insert(0, str(ROOT))
+        from src.data.edge_enhancer import preview_enhancement
+
+        original_rgb, edges_rgb, blended_rgb = preview_enhancement(
+            str(tmp_path), alpha, canny_low, canny_high
+        )
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.image(original_rgb, caption="Orijinal", use_container_width=True)
+        with col2:
+            st.image(edges_rgb, caption="Canny Kenarlar", use_container_width=True)
+        with col3:
+            st.image(blended_rgb, caption=f"Harmanlanmis (a={alpha})", use_container_width=True)
+
+        # Compare with YOLO
+        st.markdown("---")
+        st.subheader("YOLO Karsilastirmasi")
+        model = get_model()
+        if model is not None:
+            col_orig, col_enhanced = st.columns(2)
+
+            with col_orig:
+                st.markdown("**Orijinal ile Tespit**")
+                r1 = model.predict(str(tmp_path), imgsz=640, conf=0.25, verbose=False)
+                ann1 = r1[0].plot()[:, :, ::-1]
+                st.image(ann1, use_container_width=True)
+                st.caption(f"Tespit sayisi: {len(r1[0].boxes)}")
+
+            with col_enhanced:
+                st.markdown("**Enhanced ile Tespit**")
+                enhanced_path = REPORTS_DIR / f"_tmp_edge_enhanced_{uploaded.name}"
+                enhanced_bgr = cv2.cvtColor(blended_rgb, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(str(enhanced_path), enhanced_bgr)
+                r2 = model.predict(str(enhanced_path), imgsz=640, conf=0.25, verbose=False)
+                ann2 = r2[0].plot()[:, :, ::-1]
+                st.image(ann2, use_container_width=True)
+                st.caption(f"Tespit sayisi: {len(r2[0].boxes)}")
+                if enhanced_path.exists():
+                    enhanced_path.unlink()
+        else:
+            st.info("Model yuklenmedi - YOLO karsilastirmasi icin modeli yukleyin.")
+    except Exception as e:
+        st.error(f"Islem hatasi: {e}")
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+# ── Page: Spatial Clustering ────────────────────────────────────────
+
+def page_spatial():
+    st.header("Geometrik Mekansal Kumeleme")
+
+    st.markdown(
+        "YOLO tespitlerini urunun fiziksel geometrisine gore analiz eder. "
+        "4 vida pozisyonu (sol 2, sag 2) beklenir. Sol/sag taraf durumuna "
+        "gore karar matrisi uygulanir."
+    )
+
+    # Decision matrix display
+    with st.expander("Karar Matrisi", expanded=True):
+        matrix_data = {
+            "Sol Taraf": ["S (Vida Var)", "MS (Vida Eksik)", "S (Vida Var)", "MS (Vida Eksik)", "MC Tespiti"],
+            "Sag Taraf": ["S (Vida Var)", "S (Vida Var)", "MS (Vida Eksik)", "MS (Vida Eksik)", "Herhangi"],
+            "Sonuc": ["OK", "missing_screw (sol)", "missing_screw (sag)", "missing_component (kesin)", "missing_component"],
+            "Renk": ["yesil", "turuncu", "turuncu", "kirmizi", "kirmizi"],
+        }
+        st.dataframe(
+            {k: v for k, v in matrix_data.items() if k != "Renk"},
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown("---")
+
+    # Upload and analyze
+    uploaded = st.file_uploader(
+        "Goruntu yukle (YOLO + Spatial analiz)",
+        type=["jpg", "jpeg", "png", "bmp"],
+        key="spatial_upload",
+    )
+
+    if not uploaded:
+        st.info("Goruntu yukleyin, YOLO tespiti + mekansal analiz sonuclarini gorun.")
+
+        # Show architecture diagram
+        _draw_spatial_diagram()
+        return
+
+    model = get_model()
+    if model is None:
+        st.error("Model bulunamadi: `models/phase1_final_ca.pt`")
+        return
+
+    tmp_path = REPORTS_DIR / f"_tmp_spatial_{uploaded.name}"
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_path.write_bytes(uploaded.getvalue())
+
+    try:
+        sys.path.insert(0, str(ROOT))
+        from src.reasoning.spatial_logic import (
+            SpatialAnalyzer, Detection, detections_from_yolo_result,
+        )
+
+        # Run YOLO
+        results = model.predict(str(tmp_path), imgsz=640, conf=0.25, verbose=False)
+        result = results[0]
+        detections = detections_from_yolo_result(result)
+
+        # Run spatial analysis
+        analyzer = SpatialAnalyzer(n_clusters=4)
+        spatial_result = analyzer.analyze_frame(detections, img_shape=result.orig_shape)
+
+        # Display results
+        col_img, col_result = st.columns([2, 1])
+
+        with col_img:
+            _draw_spatial_overlay(result, spatial_result)
+
+        with col_result:
+            # Verdict badge
+            verdict_colors = {"OK": "green", "missing_screw": "orange", "missing_component": "red"}
+            verdict_color = verdict_colors.get(spatial_result.verdict, "gray")
+            st.markdown(f"### :{verdict_color}[{spatial_result.verdict.upper()}]")
+            st.metric("Tespit Sayisi", spatial_result.detection_count)
+            st.metric("Ortalama Confidence", f"{spatial_result.confidence:.1%}")
+
+            st.markdown("---")
+            st.markdown(f"**Neden:** {spatial_result.reason}")
+            st.markdown(f"**Sol Taraf:** `{spatial_result.left_status}`")
+            st.markdown(f"**Sag Taraf:** `{spatial_result.right_status}`")
+
+            st.markdown("---")
+            st.markdown(f"**Kume Sayisi:** {len(spatial_result.clusters)}")
+            for cluster in spatial_result.clusters:
+                st.markdown(
+                    f"- Kume {cluster.cluster_id} ({cluster.side}): "
+                    f"**{cluster.dominant_class}** "
+                    f"({len(cluster.detections)} tespit, "
+                    f"conf={cluster.avg_confidence:.1%})"
+                )
+
+    except Exception as e:
+        st.error(f"Analiz hatasi: {e}")
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+def _draw_spatial_overlay(yolo_result, spatial_result):
+    """Draw annotated image with cluster boundaries and side labels."""
+    annotated = yolo_result.plot()
+
+    h, w = annotated.shape[:2]
+    mid_x = w // 2
+
+    # Draw center dividing line
+    cv2.line(annotated, (mid_x, 0), (mid_x, h), (255, 255, 0), 2)
+    cv2.putText(annotated, "SOL", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+    cv2.putText(annotated, "SAG", (w - 80, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+
+    # Draw cluster centers
+    cluster_colors = [(0, 255, 0), (0, 165, 255), (0, 0, 255), (255, 0, 255)]
+    for cluster in spatial_result.clusters:
+        cx, cy = int(cluster.center[0]), int(cluster.center[1])
+        color = cluster_colors[cluster.cluster_id % len(cluster_colors)]
+        cv2.circle(annotated, (cx, cy), 12, color, 3)
+        label = f"K{cluster.cluster_id}:{cluster.dominant_class[:3]}"
+        cv2.putText(annotated, label, (cx - 30, cy - 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+    # Draw verdict
+    verdict_colors = {"OK": (0, 255, 0), "missing_screw": (0, 165, 255), "missing_component": (0, 0, 255)}
+    v_color = verdict_colors.get(spatial_result.verdict, (128, 128, 128))
+    cv2.putText(annotated, f"VERDICT: {spatial_result.verdict.upper()}",
+                (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.9, v_color, 2)
+
+    annotated_rgb = annotated[:, :, ::-1]
+    st.image(annotated_rgb, caption="Mekansal Analiz Sonucu", use_container_width=True)
+
+
+def _draw_spatial_diagram():
+    """Draw the spatial clustering architecture diagram."""
+    fig, ax = plt.subplots(figsize=(12, 4), dpi=130)
+    ax.set_xlim(0, 12)
+    ax.set_ylim(0, 4.5)
+    ax.axis("off")
+
+    boxes = [
+        (0.2, 1.5, 2.0, 1.5, "YOLO\nTespit", "#1565C0"),
+        (2.8, 1.5, 2.2, 1.5, "K-Means\nKumeleme\n(k=4)", "#FF9800"),
+        (5.6, 1.5, 2.2, 1.5, "Sol/Sag\nAtama", "#7B1FA2"),
+        (8.4, 1.5, 2.2, 1.5, "Karar\nMatrisi", "#D32F2F"),
+        (8.4, 0.0, 2.2, 1.0, "OK / NOK\nSonuc", "#4CAF50"),
+    ]
+
+    for bx, by, bw, bh, text, color in boxes:
+        rect = mpatches.FancyBboxPatch(
+            (bx, by), bw, bh, boxstyle="round,pad=0.1",
+            facecolor=color, edgecolor="white", alpha=0.9, linewidth=1.5,
+        )
+        ax.add_patch(rect)
+        ax.text(bx + bw / 2, by + bh / 2, text,
+                ha="center", va="center", fontsize=9, fontweight="bold", color="white")
+
+    arrow_kw = dict(arrowstyle="-|>", color="#333", lw=1.8)
+    ax.annotate("", xy=(2.8, 2.25), xytext=(2.2, 2.25), arrowprops=arrow_kw)
+    ax.annotate("", xy=(5.6, 2.25), xytext=(5.0, 2.25), arrowprops=arrow_kw)
+    ax.annotate("", xy=(8.4, 2.25), xytext=(7.8, 2.25), arrowprops=arrow_kw)
+    ax.annotate("", xy=(9.5, 1.5), xytext=(9.5, 1.0), arrowprops=arrow_kw)
+
+    ax.set_title("Geometrik Mekansal Kumeleme Mimarisi", fontsize=11, fontweight="bold")
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 PAGES = {
     "Canli Tahmin": page_inference,
     "Veri & Dengeleme": page_data,
+    "Edge Enhancement": page_edge_enhancement,
+    "Spatial Clustering": page_spatial,
     "Neden CA?": page_ca,
     "MLflow Takibi": page_mlflow,
     "VLM Stratejisi": page_vlm,

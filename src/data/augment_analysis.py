@@ -1,3 +1,18 @@
+"""Augmented data ingestion and imbalance analysis.
+
+Ingests images from augmentation folders (coklanmis, coklanmisacili, etc.)
+into the canonical YOLO train split with:
+- MD5 deduplication
+- Data leakage prevention (val/test hash check)
+- Proper label handling (copies existing labels, skips unlabeled images)
+- Background image support with ratio cap
+
+Usage:
+    python src/data/augment_analysis.py
+    python src/data/augment_analysis.py --source-dir coklanmis --source-dir coklanmisacili
+    python src/data/augment_analysis.py --clean-augmented   # Remove old weak labels first
+"""
+
 import argparse
 import hashlib
 import json
@@ -28,8 +43,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--source-dir",
         type=Path,
-        default=ROOT / "coklanmis",
-        help="Folder that contains aparatsiz/eksik_vida/vida(ok)/diger",
+        action="append",
+        default=None,
+        help="Folder(s) containing class subfolders. Can be specified multiple times.",
     )
     parser.add_argument(
         "--dataset-dir",
@@ -49,8 +65,25 @@ def parse_args() -> argparse.Namespace:
         default=1.5,
         help="Background cap ratio relative to positive candidates",
     )
+    parser.add_argument(
+        "--clean-augmented",
+        action="store_true",
+        help="Remove previously ingested aug_* files from train before re-ingesting",
+    )
     parser.add_argument("--seed", type=int, default=42)
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # Default source dirs if none specified
+    if args.source_dir is None:
+        args.source_dir = []
+        for name in ["coklanmis", "coklanmisacili"]:
+            candidate = ROOT / name
+            if candidate.exists():
+                args.source_dir.append(candidate)
+        if not args.source_dir:
+            args.source_dir = [ROOT / "coklanmis"]
+
+    return args
 
 
 def normalize_name(name: str) -> str:
@@ -58,15 +91,33 @@ def normalize_name(name: str) -> str:
 
 
 def folder_to_class_id(folder_name: str):
+    """Map folder name to YOLO class ID.
+
+    Returns:
+        int: class ID (0=screw, 1=missing_screw, 2=missing_component)
+        None: background folder (no label)
+        "ignore": unrecognized folder (skip entirely)
+    """
     key = normalize_name(folder_name)
     class_map = {
+        # Turkish names
         "aparatsiz": 2,
         "eksik_vida": 1,
         "eksikvida": 1,
         "vida": 0,
         "ok": 0,
+        # English names
+        "screw": 0,
+        "missing_screw": 1,
+        "missingscrew": 1,
+        "missing_component": 2,
+        "missingcomponent": 2,
+        # Common aliases
+        "normal": 0,
+        "good": 0,
+        "iyi": 0,
     }
-    background_keys = {"diger", "background", "arka_plan", "arkaplan"}
+    background_keys = {"diger", "background", "arka_plan", "arkaplan", "other", "bg"}
     if key in class_map:
         return class_map[key]
     if key in background_keys:
@@ -89,6 +140,40 @@ def md5_file(path: Path) -> str:
                 break
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def find_existing_label(image_path: Path) -> Path | None:
+    """Look for a YOLO label file next to the image."""
+    label_path = image_path.with_suffix(".txt")
+    if label_path.exists() and label_path.stat().st_size > 0:
+        # Validate it looks like a YOLO label
+        try:
+            first_line = label_path.read_text(encoding="utf-8").strip().split("\n")[0]
+            parts = first_line.split()
+            if len(parts) == 5:
+                int(parts[0])  # class id
+                float(parts[1])  # cx
+                return label_path
+        except (ValueError, IndexError):
+            pass
+    return None
+
+
+def is_weak_label(label_path: Path) -> bool:
+    """Check if a label file contains only weak (full-image) bounding boxes."""
+    try:
+        lines = label_path.read_text(encoding="utf-8").strip().split("\n")
+        for line in lines:
+            parts = line.strip().split()
+            if len(parts) != 5:
+                continue
+            cx, cy, w, h = float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
+            # Weak label: bbox covers >90% of image in both dimensions
+            if w > 0.90 and h > 0.90:
+                return True
+        return False
+    except (ValueError, IndexError):
+        return False
 
 
 def collect_split_hashes(dataset_dir: Path):
@@ -149,6 +234,18 @@ def make_safe_stem(folder_name: str, source_stem: str, file_hash: str) -> str:
     return f"{raw}_{file_hash[:10]}"
 
 
+def clean_augmented_files(train_img_dir: Path, train_lbl_dir: Path) -> int:
+    """Remove previously ingested aug_* files from train split."""
+    removed = 0
+    for img in train_img_dir.glob("aug_*"):
+        img.unlink()
+        removed += 1
+    for lbl in train_lbl_dir.glob("aug_*"):
+        lbl.unlink()
+        removed += 1
+    return removed
+
+
 def write_bar_chart(before: dict, after: dict, out_png: Path) -> None:
     cls_order = [0, 1, 2]
     cls_labels = [CLASS_ID_TO_NAME[i] for i in cls_order]
@@ -195,8 +292,10 @@ def main() -> None:
     args = parse_args()
     random_gen = random.Random(args.seed)
 
-    if not args.source_dir.exists():
-        raise FileNotFoundError(f"Source dir not found: {args.source_dir}")
+    for src in args.source_dir:
+        if not src.exists():
+            print(f"[WARN] Source dir not found, skipping: {src}")
+
     if not args.dataset_dir.exists():
         raise FileNotFoundError(f"Dataset dir not found: {args.dataset_dir}")
 
@@ -208,6 +307,11 @@ def main() -> None:
         if not p.exists():
             raise FileNotFoundError(f"Required folder missing: {p}")
 
+    # Clean old augmented files if requested
+    if args.clean_augmented:
+        removed = clean_augmented_files(train_img_dir, train_lbl_dir)
+        print(f"[INFO] Cleaned {removed} old aug_* files from train split")
+
     before = read_label_distribution(train_lbl_dir)
 
     train_hashes, valtest_hashes, split_counts = collect_split_hashes(args.dataset_dir)
@@ -215,19 +319,23 @@ def main() -> None:
     class_files = {0: [], 1: [], 2: []}
     background_files = []
     ignored_folders = []
+    skipped_no_label = 0
 
-    for child in sorted(args.source_dir.iterdir(), key=lambda p: p.name.lower()):
-        if not child.is_dir():
+    for source_dir in args.source_dir:
+        if not source_dir.exists():
             continue
-        mapped = folder_to_class_id(child.name)
-        imgs = list(iter_images(child))
-        if mapped == "ignore":
-            ignored_folders.append({"folder": child.name, "images": len(imgs)})
-            continue
-        if mapped is None:
-            background_files.extend(imgs)
-        else:
-            class_files[mapped].extend(imgs)
+        for child in sorted(source_dir.iterdir(), key=lambda p: p.name.lower()):
+            if not child.is_dir():
+                continue
+            mapped = folder_to_class_id(child.name)
+            imgs = list(iter_images(child))
+            if mapped == "ignore":
+                ignored_folders.append({"folder": child.name, "source": str(source_dir), "images": len(imgs)})
+                continue
+            if mapped is None:
+                background_files.extend(imgs)
+            else:
+                class_files[mapped].extend(imgs)
 
     positive_candidates = sum(len(v) for v in class_files.values())
     background_cap_from_ratio = int(positive_candidates * args.background_ratio)
@@ -243,10 +351,13 @@ def main() -> None:
         "skipped_duplicate_train": 0,
         "skipped_duplicate_batch": 0,
         "skipped_leakage_valtest": 0,
+        "skipped_no_label": 0,
+        "used_existing_label": 0,
     }
     added_hashes = set()
 
     def process_one(src_img: Path, class_id):
+        nonlocal skipped_no_label
         file_hash = md5_file(src_img)
         if file_hash in valtest_hashes:
             stats["skipped_leakage_valtest"] += 1
@@ -268,14 +379,25 @@ def main() -> None:
             dst_lbl = train_lbl_dir / f"{stem}_{idx}.txt"
             idx += 1
 
-        shutil.copy2(src_img, dst_img)
         if class_id is None:
+            # Background image - no label needed (empty label file)
+            shutil.copy2(src_img, dst_img)
             dst_lbl.write_text("", encoding="utf-8")
             stats["added"]["background"] += 1
         else:
-            line = f"{class_id} 0.500000 0.500000 0.980000 0.980000\n"
-            dst_lbl.write_text(line, encoding="utf-8")
-            stats["added"][CLASS_ID_TO_NAME[class_id]] += 1
+            # Check for existing proper YOLO label file
+            existing_label = find_existing_label(src_img)
+            if existing_label is not None:
+                # Use the existing label (proper tight bounding box)
+                shutil.copy2(src_img, dst_img)
+                shutil.copy2(existing_label, dst_lbl)
+                stats["added"][CLASS_ID_TO_NAME[class_id]] += 1
+                stats["used_existing_label"] += 1
+            else:
+                # No label file exists - skip this image to avoid weak labeling
+                stats["skipped_no_label"] += 1
+                skipped_no_label += 1
+                return
 
         train_hashes.add(file_hash)
         added_hashes.add(file_hash)
@@ -301,7 +423,7 @@ def main() -> None:
     shutil.copy2(chart_path, latest_png)
 
     report = {
-        "source_dir": str(args.source_dir),
+        "source_dirs": [str(s) for s in args.source_dir],
         "dataset_dir": str(args.dataset_dir),
         "split_image_counts_before": split_counts,
         "before_train_distribution": before,
@@ -318,12 +440,15 @@ def main() -> None:
             "skipped_duplicate_train": stats["skipped_duplicate_train"],
             "skipped_duplicate_batch": stats["skipped_duplicate_batch"],
             "skipped_leakage_valtest": stats["skipped_leakage_valtest"],
+            "skipped_no_label": stats["skipped_no_label"],
+            "used_existing_label": stats["used_existing_label"],
         },
         "ignored_folders": ignored_folders,
         "params": {
             "seed": args.seed,
             "max_background": args.max_background,
             "background_ratio": args.background_ratio,
+            "clean_augmented": args.clean_augmented,
         },
         "artifacts": {
             "chart": str(chart_path),
@@ -335,15 +460,17 @@ def main() -> None:
     latest_json.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print("[OK] Augmented data ingestion complete")
-    print(f"- source: {args.source_dir}")
+    print(f"- sources: {[str(s) for s in args.source_dir]}")
     print(f"- dataset: {args.dataset_dir}")
     print(f"- added: {dict(stats['added'])}")
     print(
         "- skipped: "
         f"duplicate_train={stats['skipped_duplicate_train']}, "
         f"duplicate_batch={stats['skipped_duplicate_batch']}, "
-        f"leakage_valtest={stats['skipped_leakage_valtest']}"
+        f"leakage_valtest={stats['skipped_leakage_valtest']}, "
+        f"no_label={stats['skipped_no_label']}"
     )
+    print(f"- used existing labels: {stats['used_existing_label']}")
     print(f"- report json: {json_path}")
     print(f"- report chart: {chart_path}")
 
