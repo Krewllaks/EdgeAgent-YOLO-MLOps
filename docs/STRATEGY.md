@@ -1,7 +1,7 @@
 # EdgeAgent Teknik Strateji Dokumani
 
-Tarih: 2026-03-10
-Durum: Sprint 1 Tamamlandi, Phase 2 Hazirligi
+Tarih: 2026-03-12
+Durum: Sprint 1 Tamamlandi, Model V2 + Post-Processing Hazirligi
 
 ---
 
@@ -139,18 +139,79 @@ olarak (yani resmin tamami) etiketlendiginde:
 - Model "metal dokunun tamamini" hata olarak algilamaya baslar
 - Yuksek mAP raporu alditicildir cunku model resmin %100'unu eslestiriyor
 
-### Cozum
-- Coklanmis verilerdeki etiketler gozden gecirilmeli
-- Her augmented goruntude nesneyi **tam cevreleyen** (tight bounding box) kullanilmali
-- Mevcut veriler icin random sample alip manual kontrol yapilmali
+### Cozum (UYGULANMIS)
+- `augment_analysis.py` guncellendi: Artik weak label OLUSTURMUYOR
+- Eger goruntunun yaninda uygun YOLO label dosyasi varsa -> kopyalar
+- Eger label dosyasi yoksa -> goruntuyu atlar (egitim setine EKLEMEZ)
+- `--clean-augmented` flagi ile eski weak label dosyalari temizlenebilir
+- Ingilizce klasor isimleri de artik destekleniyor (screw, missing_screw, missing_component)
 
 ### Etki Degerlendirmesi
-- Eger tight bbox kullanildiysa: Sorun yok
-- Eger full-image bbox kullanildiysa: Etiketlerin duzeltilmesi **en oncelikli** is
+- Eski durum: Tum augmented goruntulere `(0.5, 0.5, 0.98, 0.98)` label veriliyordu -> TEHLIKELI
+- Yeni durum: Sadece duzgun label'a sahip goruntular kullaniliyor -> GUVENLI
 
 ---
 
-## 6. TensorRT Optimizasyonu
+## 6. Canny Edge Enhancement (Onisleme)
+
+### Problem
+Metal yuzeyler uzerindeki yansimalar (specularity) YOLO'nun
+kenar detaylarini algilamasini zorlastirir. Ozellikle parlak
+vida baslarinda false negative veya dusuk confidence olabiliyor.
+
+### Cozum: Canny Kenar Karistirma
+```
+blended = alpha * original + (1 - alpha) * canny_edges_rgb
+```
+
+- **alpha**: 0.7 (varsayilan) - orijinal goruntunun agirligi
+- **Canny esikleri**: low=50, high=150 (ayarlanabilir)
+- Kenar haritasi: grayscale -> Canny -> RGB'ye cevir -> harmanlama
+
+### Kullanim
+- Dashboard "Edge Enhancement" sayfasindan interaktif onizleme
+- Batch isleme: `python src/data/edge_enhancer.py --input-dir ... --output-dir ...`
+- YOLO karsilastirmasi: Orijinal vs Enhanced tespit sayisi
+
+### Implementasyon
+- `src/data/edge_enhancer.py` - enhance_single(), enhance_dataset(), preview_enhancement()
+
+---
+
+## 7. Geometrik Mekansal Kumeleme (Post-Processing)
+
+### Problem
+YOLO sadece bireysel nesneleri tespit eder, ama urunun **fiziksel geometrisini**
+bilmez. Bir urun uzerinde 4 vida pozisyonu varsa (sol 2, sag 2), bu bilgiyi
+kullanarak daha guvenilir karar verebiliriz.
+
+### Cozum: Spatial Clustering + Karar Matrisi
+
+1. YOLO tespitlerini K-Means ile 4 kumeye ayir (beklenen vida pozisyonlari)
+2. Kumeleri sol/sag tarafa ata (x-koordinat median'i)
+3. Her tarafin durumunu belirle: S (screw var) veya MS (missing_screw)
+4. Karar matrisi uygula:
+
+```
+Sol S  + Sag S   -> OK (tum vidalar mevcut)
+Sol MS + Sag S   -> missing_screw (sol taraf)
+Sol S  + Sag MS  -> missing_screw (sag taraf)
+Sol MS + Sag MS  -> missing_component (kesin)
+Herhangi MC      -> missing_component (dogrudan tespit)
+```
+
+### Avantajlari
+- Tek basina YOLO'dan daha guvenilir kararlar
+- Fiziksel urun geometrisini kullanarak false positive azaltma
+- "Iki tarafta da eksik = komponent eksik" mantigi otomatik
+
+### Implementasyon
+- `src/reasoning/spatial_logic.py` - SpatialAnalyzer, detections_from_yolo_result()
+- Dashboard "Spatial Clustering" sayfasindan interaktif analiz
+
+---
+
+## 8. TensorRT Optimizasyonu
 
 ### Neden Gerekli?
 - Fabrika hedefi: 200 urun/saniye -> frame basi 5ms butce
@@ -174,7 +235,7 @@ python scripts/export_tensorrt.py --dry-run           # Sadece config goster
 
 ---
 
-## 7. Surekli Egitim (Continuous Training) Stratejisi
+## 9. Surekli Egitim (Continuous Training) Stratejisi
 
 ### Hedef
 Model, her hafta yeni gelen hatali verilerle otomatik fine-tune edilir.
@@ -200,15 +261,18 @@ Dashboard'daki inference playground'da operator her tahmin icin
 
 ---
 
-## 8. Iyilestirme Oncelik Tablosu
+## 10. Iyilestirme Oncelik Tablosu
 
 | Oncelik | Madde | Durum |
 |---------|-------|-------|
-| KRITIK | Weak label'leri tight bbox ile dogrula/duzelt | BEKLIYOR |
+| KRITIK | Weak label'leri duzelt (augment_analysis.py) | TAMAMLANDI |
 | KRITIK | TensorRT FP16 export + benchmark | SCRIPT HAZIR |
 | YUKSEK | Dashboard inference playground | TAMAMLANDI |
 | YUKSEK | FP orneklerini kaydet + analiz et | TAMAMLANDI |
 | YUKSEK | Operator geri bildirim (Active Learning) | TAMAMLANDI |
+| YUKSEK | Canny Edge Enhancement onisleme | TAMAMLANDI |
+| YUKSEK | Geometrik Mekansal Kumeleme post-processing | TAMAMLANDI |
+| YUKSEK | Model V2 egitimi (tum veri kaynaklari) | HAZIRLANIYOR |
 | ORTA | Isik degisimi concept drift testi | PHASE 2 |
 | ORTA | CA Neck ablation deneyi | PHASE 2 |
 | ORTA | PaliGemma async zamanlama olcumu | PHASE 2 |

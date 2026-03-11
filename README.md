@@ -58,16 +58,27 @@ python scripts/prepare_phase1_dataset.py
 
 ### 2) Augment Integration + Imbalance Analysis
 
-Ingest `coklanmis/` data into `train` with duplicate and leakage checks, then generate reports:
+Ingest `coklanmis/` and `coklanmisacili/` data into `train` with duplicate and leakage checks:
 
 ```bash
 python src/data/augment_analysis.py
+python src/data/augment_analysis.py --clean-augmented  # remove old weak labels first
+python src/data/augment_analysis.py --source-dir coklanmis --source-dir coklanmisacili
 ```
 
 Outputs:
 
 - `reports/generated/augmentation_imbalance_latest.json`
 - `reports/generated/augmentation_imbalance_latest.png`
+
+### 2b) Edge Enhancement (Canny Preprocessing)
+
+Apply Canny edge blending for metal surface reflection suppression:
+
+```bash
+python src/data/edge_enhancer.py --image path/to/img.jpg --preview
+python src/data/edge_enhancer.py --input-dir data/processed/phase1_v2/train/images --output-dir data/processed/phase1_v2_edge/train/images
+```
 
 ### 3) UI Technical Dashboard
 
@@ -79,13 +90,16 @@ streamlit run src/ui/sprint1_dashboard.py
 
 Dashboard includes:
 
-- class balance before/after visualization
-- Neden CA kullandik? (Coordinate Attention rationale)
+- Live inference playground (image upload + YOLO prediction)
+- Edge Enhancement preview (Canny blending with parameter tuning)
+- Spatial Clustering analysis (geometric post-processing with decision matrix)
+- Class balance before/after visualization
+- Coordinate Attention rationale
 - MLflow experiment tracking integration
 - Phase 2 VLM async trigger strategy (visual flow diagram)
 - Edge profiler results (Jetson Orin Nano estimate)
-- Sprint 1 decision snapshot
-- Operator controls (emergency stop placeholder)
+- FP analysis and Active Learning feedback
+- Decision snapshot and operator controls
 
 ### 4) Edge Profiler (Phase 2 Prep)
 
@@ -112,24 +126,33 @@ python scripts/export_tensorrt.py --half
 python scripts/export_tensorrt.py --dry-run  # config only
 ```
 
-## Train Final Phase 1 (Optional Re-run)
+## Training
+
+### Model V1 (Sprint 1 - Phase 1)
 
 ```bash
 python scripts/train_final_phase1.py --data data/processed/phase1_multiclass_v1/data.yaml --model-cfg configs/models/yolov10s_ca.yaml --epochs 100 --batch 8 --imgsz 640 --amp --workers 4 --device 0
 ```
 
+### Model V2 (All data sources)
+
+```bash
+python scripts/train_final_phase1.py --data data/processed/phase1_v2/data.yaml --epochs 100 --batch 8 --imgsz 640 --amp --workers 4 --device 0
+```
+
 Post-training automation:
 
-- copies best checkpoint to `models/phase1_final_ca.pt`
-- writes baseline-vs-final comparison to `reports/final_phase1_report.md`
+- copies best checkpoint to `models/phase1_final_ca.pt` (V1) or `models/phase1_v2_ca.pt` (V2)
+- writes comparison report to `reports/`
 
 ## Repository Layout
 
 - `src/models/` - shared modules (CoordAtt attention layer)
 - `src/edge/` - edge deployment tools (profiler, VLM trigger)
-- `src/ui/` - Streamlit dashboard
-- `src/data/` - data processing and augmentation analysis
-- `scripts/` - operational scripts (prepare, train, infer, gpu check)
+- `src/reasoning/` - spatial logic and geometric clustering post-processor
+- `src/ui/` - Streamlit dashboard (11 pages)
+- `src/data/` - data processing, augmentation analysis, edge enhancement
+- `scripts/` - operational scripts (prepare, train, infer, gpu check, TensorRT export)
 - `configs/` - model and dataset configs
 - `docs/` - strategy, collaboration guide, setup guides, status
 - `reports/` - reproducible reports (`generated/` ignored in git)
@@ -138,7 +161,7 @@ Post-training automation:
 
 Large/local data and training artifacts are intentionally excluded from git:
 
-- `erdogan1/`, `erdogan2/`, `coklanmis/`, `roboflowetiketlenen/`
+- `erdogan1/`, `erdogan2/`, `coklanmis/`, `coklanmisacili/`, `roboflowetiketlenen/`
 - `data/processed/`, `runs/`, `mlruns/`, `*.pt`
 
 This keeps the repository lightweight and reproducible for team onboarding.

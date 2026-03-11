@@ -20,6 +20,7 @@ def parse_args() -> argparse.Namespace:
         "--data",
         type=Path,
         default=ROOT / "data" / "processed" / "phase1_multiclass_v1" / "data.yaml",
+        help="Path to data.yaml (use phase1_v2 for Model V2)",
     )
     parser.add_argument(
         "--model-cfg",
@@ -38,8 +39,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-best",
         type=Path,
-        default=ROOT / "models" / "phase1_final_ca.pt",
-        help="Best model destination path",
+        default=None,
+        help="Best model destination path (auto-detected from data version)",
     )
     parser.add_argument(
         "--baseline-results",
@@ -50,8 +51,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--final-report",
         type=Path,
-        default=ROOT / "reports" / "final_phase1_report.md",
-        help="Markdown report output path",
+        default=None,
+        help="Markdown report output path (auto-detected from data version)",
     )
     parser.add_argument("--dry-run", action="store_true")
 
@@ -59,7 +60,28 @@ def parse_args() -> argparse.Namespace:
     amp_group.add_argument("--amp", dest="amp", action="store_true")
     amp_group.add_argument("--no-amp", dest="amp", action="store_false")
     parser.set_defaults(amp=True)
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # Auto-detect output paths from data version
+    data_dir_name = args.data.parent.name  # e.g. "phase1_multiclass_v1" or "phase1_v2"
+    is_v2 = "v2" in data_dir_name
+
+    if args.output_best is None:
+        if is_v2:
+            args.output_best = ROOT / "models" / "phase1_v2_ca.pt"
+        else:
+            args.output_best = ROOT / "models" / "phase1_final_ca.pt"
+
+    if args.final_report is None:
+        if is_v2:
+            args.final_report = ROOT / "reports" / "final_phase1_v2_report.md"
+        else:
+            args.final_report = ROOT / "reports" / "final_phase1_report.md"
+
+    if is_v2 and args.name == "yolov10s_ca_final":
+        args.name = "yolov10s_ca_v2"
+
+    return args
 
 
 def resolve_device(device_arg: str) -> str:
