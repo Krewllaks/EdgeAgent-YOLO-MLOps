@@ -11,6 +11,8 @@ Usage:
     python src/data/augment_analysis.py
     python src/data/augment_analysis.py --source-dir coklanmis --source-dir coklanmisacili
     python src/data/augment_analysis.py --clean-augmented   # Remove old weak labels first
+    python src/data/augment_analysis.py --allow-folder-labels  # Use folder name as class label
+    python src/data/augment_analysis.py --allow-folder-labels --fallback-bbox "0.5 0.5 0.8 0.8"
 """
 
 import argparse
@@ -70,8 +72,25 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Remove previously ingested aug_* files from train before re-ingesting",
     )
+    parser.add_argument(
+        "--allow-folder-labels",
+        action="store_true",
+        help="When no .txt label exists, create a label from folder class using --fallback-bbox",
+    )
+    parser.add_argument(
+        "--fallback-bbox",
+        type=str,
+        default="0.5 0.5 0.8 0.8",
+        help="cx cy w h for folder-based labels (default: '0.5 0.5 0.8 0.8')",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+
+    # Parse fallback bbox
+    bbox_parts = args.fallback_bbox.strip().split()
+    if len(bbox_parts) != 4:
+        raise ValueError(f"--fallback-bbox must have 4 values, got: {args.fallback_bbox}")
+    args.fallback_bbox_parsed = [float(x) for x in bbox_parts]
 
     # Default source dirs if none specified
     if args.source_dir is None:
@@ -353,6 +372,7 @@ def main() -> None:
         "skipped_leakage_valtest": 0,
         "skipped_no_label": 0,
         "used_existing_label": 0,
+        "used_folder_label": 0,
     }
     added_hashes = set()
 
@@ -393,6 +413,16 @@ def main() -> None:
                 shutil.copy2(existing_label, dst_lbl)
                 stats["added"][CLASS_ID_TO_NAME[class_id]] += 1
                 stats["used_existing_label"] += 1
+            elif args.allow_folder_labels:
+                # Create label from folder class with fallback bbox
+                cx, cy, bw, bh = args.fallback_bbox_parsed
+                shutil.copy2(src_img, dst_img)
+                dst_lbl.write_text(
+                    f"{class_id} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}",
+                    encoding="utf-8",
+                )
+                stats["added"][CLASS_ID_TO_NAME[class_id]] += 1
+                stats["used_folder_label"] += 1
             else:
                 # No label file exists - skip this image to avoid weak labeling
                 stats["skipped_no_label"] += 1
@@ -442,6 +472,7 @@ def main() -> None:
             "skipped_leakage_valtest": stats["skipped_leakage_valtest"],
             "skipped_no_label": stats["skipped_no_label"],
             "used_existing_label": stats["used_existing_label"],
+            "used_folder_label": stats["used_folder_label"],
         },
         "ignored_folders": ignored_folders,
         "params": {
@@ -449,6 +480,8 @@ def main() -> None:
             "max_background": args.max_background,
             "background_ratio": args.background_ratio,
             "clean_augmented": args.clean_augmented,
+            "allow_folder_labels": args.allow_folder_labels,
+            "fallback_bbox": args.fallback_bbox,
         },
         "artifacts": {
             "chart": str(chart_path),
@@ -471,6 +504,7 @@ def main() -> None:
         f"no_label={stats['skipped_no_label']}"
     )
     print(f"- used existing labels: {stats['used_existing_label']}")
+    print(f"- used folder labels: {stats['used_folder_label']}")
     print(f"- report json: {json_path}")
     print(f"- report chart: {chart_path}")
 

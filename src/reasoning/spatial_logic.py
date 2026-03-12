@@ -3,13 +3,20 @@
 Analyzes YOLO detection results using physical product geometry:
 - Groups detections into spatial clusters (expected 4 screw positions)
 - Assigns clusters to left/right sides
-- Applies decision matrix for final OK/NOK verdict
+- Applies per-side decision matrix for final OK/NOK verdict
 
-Decision Matrix:
-    Left S  + Right S   -> OK (all screws present)
+Per-Side Logic (2 screw positions per side):
+    2 S  (both screws present)      -> side = S   (component present, OK)
+    1 S + 1 MS (one screw missing)  -> side = MS  (component present, screw missing)
+    2 MS (both screws missing)      -> side = MC  (component missing!)
+
+Overall Decision Matrix:
+    Left S  + Right S   -> OK
     Left MS + Right S   -> missing_screw (left side)
     Left S  + Right MS  -> missing_screw (right side)
-    Left MS + Right MS  -> missing_component (guaranteed)
+    Left MS + Right MS  -> missing_screw (both sides)
+    Left MC + Right any -> missing_component (left component gone)
+    Right MC + Left any -> missing_component (right component gone)
     Any MC detection     -> missing_component (direct)
 
 Usage (standalone test):
@@ -200,24 +207,29 @@ class SpatialAnalyzer:
         left_clusters = [c for c in clusters if c.side == "left"]
         right_clusters = [c for c in clusters if c.side == "right"]
 
-        # Check for direct missing_component detection
-        all_dets = [d for c in clusters for d in c.detections]
-        mc_dets = [d for d in all_dets if d.class_name == "missing_component"]
-        if mc_dets:
-            return ("missing_component", "Dogrudan missing_component tespiti",
-                    "MC", "MC")
-
-        # Determine side statuses
+        # Determine side statuses (includes per-side MC detection)
         left_status = self._side_status(left_clusters)
         right_status = self._side_status(right_clusters)
 
         # Decision matrix
-        if left_status == "S" and right_status == "S":
+        # MC on any side -> missing_component
+        if left_status == "MC" or right_status == "MC":
+            sides = []
+            if left_status == "MC":
+                sides.append("sol")
+            if right_status == "MC":
+                sides.append("sag")
+            verdict = "missing_component"
+            reason = (
+                f"Tum vidalar eksik ({', '.join(sides)} taraf) - "
+                f"missing_component kesin (Sol: {left_status}, Sag: {right_status})"
+            )
+        elif left_status == "S" and right_status == "S":
             verdict = "OK"
             reason = "Tum vidalar mevcut (Sol: OK, Sag: OK)"
         elif left_status == "MS" and right_status == "MS":
-            verdict = "missing_component"
-            reason = "Her iki tarafta da vida eksik - missing_component kesin"
+            verdict = "missing_screw"
+            reason = f"Her iki tarafta vida eksik (Sol: {left_status}, Sag: {right_status})"
         elif left_status == "MS":
             verdict = "missing_screw"
             reason = f"Sol tarafta vida eksik (Sol: {left_status}, Sag: {right_status})"
@@ -233,22 +245,38 @@ class SpatialAnalyzer:
     def _side_status(self, side_clusters: List[SpatialCluster]) -> str:
         """Determine the status of one side (left or right).
 
-        Returns: "S" (screw present), "MS" (missing screw), or "unknown"
+        Per-side logic (expects 2 screw positions per side):
+            2 S  -> "S"  (all screws present, component OK)
+            1 S + 1 MS -> "MS" (component present but screw missing)
+            2 MS -> "MC" (no screws at all -> component missing)
+
+        Returns: "S", "MS", "MC", or "unknown"
         """
         if not side_clusters:
             return "unknown"
 
-        # Check dominant class across all clusters on this side
         all_dets = [d for c in side_clusters for d in c.detections]
         if not all_dets:
             return "unknown"
 
         ms_count = sum(1 for d in all_dets if d.class_name == "missing_screw")
         s_count = sum(1 for d in all_dets if d.class_name == "screw")
+        mc_count = sum(1 for d in all_dets if d.class_name == "missing_component")
 
-        if ms_count > s_count:
+        # Direct missing_component detection on this side
+        if mc_count > 0:
+            return "MC"
+
+        # If at least one screw is present, component is there
+        if s_count > 0 and ms_count == 0:
+            return "S"
+        if s_count > 0 and ms_count > 0:
             return "MS"
-        return "S"
+        # All detections are missing_screw, no screw at all -> component missing
+        if ms_count > 0 and s_count == 0:
+            return "MC"
+
+        return "unknown"
 
     def analyze_frame(
         self,
@@ -307,7 +335,7 @@ def _run_self_test():
     """Self-test with synthetic data."""
     analyzer = SpatialAnalyzer(n_clusters=4)
 
-    # Test 1: All screws present -> OK
+    # Test 1: All screws present (2S + 2S) -> OK
     dets_ok = [
         Detection(0, 0.95, (50, 50, 100, 100)),    # left-top screw
         Detection(0, 0.92, (50, 200, 100, 250)),    # left-bottom screw
@@ -315,10 +343,10 @@ def _run_self_test():
         Detection(0, 0.91, (300, 200, 350, 250)),   # right-bottom screw
     ]
     result = analyzer.analyze_frame(dets_ok, (300, 400))
-    print(f"Test 1 (all screws): verdict={result.verdict}, reason={result.reason}")
+    print(f"Test 1 (2S+2S): verdict={result.verdict}, reason={result.reason}")
     assert result.verdict == "OK", f"Expected OK, got {result.verdict}"
 
-    # Test 2: Left side missing -> missing_screw
+    # Test 2: Left 1S+1MS, Right 2S -> missing_screw
     dets_ms = [
         Detection(1, 0.85, (50, 50, 100, 100)),     # left-top missing_screw
         Detection(0, 0.90, (50, 200, 100, 250)),     # left-bottom screw
@@ -326,31 +354,54 @@ def _run_self_test():
         Detection(0, 0.91, (300, 200, 350, 250)),    # right-bottom screw
     ]
     result = analyzer.analyze_frame(dets_ms, (300, 400))
-    print(f"Test 2 (left MS): verdict={result.verdict}, reason={result.reason}")
+    print(f"Test 2 (1S+1MS | 2S): verdict={result.verdict}, reason={result.reason}")
+    assert result.verdict == "missing_screw", f"Expected missing_screw, got {result.verdict}"
 
-    # Test 3: Both sides missing -> missing_component
-    dets_mc = [
+    # Test 3: Left 2MS -> missing_component (even if right is 2S)
+    dets_left_mc = [
+        Detection(1, 0.80, (50, 50, 100, 100)),     # left-top missing
+        Detection(1, 0.82, (50, 200, 100, 250)),     # left-bottom missing
+        Detection(0, 0.88, (300, 50, 350, 100)),     # right-top screw
+        Detection(0, 0.91, (300, 200, 350, 250)),    # right-bottom screw
+    ]
+    result = analyzer.analyze_frame(dets_left_mc, (300, 400))
+    print(f"Test 3 (2MS | 2S): verdict={result.verdict}, reason={result.reason}")
+    assert result.verdict == "missing_component", f"Expected missing_component, got {result.verdict}"
+
+    # Test 4: Both sides 2MS -> missing_component
+    dets_both_mc = [
         Detection(1, 0.80, (50, 50, 100, 100)),     # left missing
         Detection(1, 0.82, (50, 200, 100, 250)),     # left missing
         Detection(1, 0.78, (300, 50, 350, 100)),     # right missing
         Detection(1, 0.75, (300, 200, 350, 250)),    # right missing
     ]
-    result = analyzer.analyze_frame(dets_mc, (300, 400))
-    print(f"Test 3 (both MS): verdict={result.verdict}, reason={result.reason}")
+    result = analyzer.analyze_frame(dets_both_mc, (300, 400))
+    print(f"Test 4 (2MS+2MS): verdict={result.verdict}, reason={result.reason}")
     assert result.verdict == "missing_component", f"Expected missing_component, got {result.verdict}"
 
-    # Test 4: No detections
+    # Test 5: Both sides 1S+1MS -> missing_screw (component still present)
+    dets_both_ms = [
+        Detection(1, 0.80, (50, 50, 100, 100)),     # left-top missing
+        Detection(0, 0.82, (50, 200, 100, 250)),     # left-bottom screw
+        Detection(1, 0.78, (300, 50, 350, 100)),     # right-top missing
+        Detection(0, 0.75, (300, 200, 350, 250)),    # right-bottom screw
+    ]
+    result = analyzer.analyze_frame(dets_both_ms, (300, 400))
+    print(f"Test 5 (1S+1MS | 1S+1MS): verdict={result.verdict}, reason={result.reason}")
+    assert result.verdict == "missing_screw", f"Expected missing_screw, got {result.verdict}"
+
+    # Test 6: No detections
     result = analyzer.analyze_frame([], (300, 400))
-    print(f"Test 4 (empty): verdict={result.verdict}, reason={result.reason}")
+    print(f"Test 6 (empty): verdict={result.verdict}, reason={result.reason}")
     assert result.verdict == "missing_component"
 
-    # Test 5: Direct MC detection
+    # Test 7: Direct MC detection
     dets_direct_mc = [
         Detection(2, 0.90, (100, 100, 300, 300)),   # missing_component
         Detection(0, 0.85, (50, 50, 100, 100)),      # screw
     ]
     result = analyzer.analyze_frame(dets_direct_mc, (400, 400))
-    print(f"Test 5 (direct MC): verdict={result.verdict}, reason={result.reason}")
+    print(f"Test 7 (direct MC): verdict={result.verdict}, reason={result.reason}")
     assert result.verdict == "missing_component"
 
     print("\n[OK] All spatial logic tests passed!")
