@@ -1,7 +1,7 @@
 """EdgeAgent Industrial Quality Control Dashboard.
 
 Multi-page Streamlit dashboard with:
-- Live inference playground (image upload + YOLO prediction)
+- Unified inference playground (YOLO + Edge Enhancement + Spatial Clustering)
 - Data integration & class balance visualisation
 - CA rationale and MLflow tracking
 - Phase 2 VLM strategy (visual flow diagram)
@@ -36,6 +36,23 @@ MODEL_PATH = ROOT / "models" / "phase1_final_ca.pt"
 
 CLASS_NAMES = {0: "screw", 1: "missing_screw", 2: "missing_component"}
 CLASS_COLORS = {"screw": "#4CAF50", "missing_screw": "#FF9800", "missing_component": "#F44336"}
+
+# ── Early CoordAtt Registration (must happen before torch.load) ─────
+# Streamlit re-executes the script on every rerun, so we register at
+# module level to ensure pickle can always resolve the custom classes.
+sys.path.insert(0, str(ROOT))
+try:
+    from src.models.coordatt import CoordAtt, HSigmoid, HSwish, register_coordatt
+    register_coordatt()
+    # Register in both __main__ and sys.modules for pickle resolution
+    import __main__ as _main_mod
+    for _cls in (HSigmoid, HSwish, CoordAtt):
+        setattr(_main_mod, _cls.__name__, _cls)
+        if "__main__" in sys.modules:
+            setattr(sys.modules["__main__"], _cls.__name__, _cls)
+    _COORDATT_OK = True
+except ImportError:
+    _COORDATT_OK = False
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -86,18 +103,14 @@ def get_model():
     if "yolo_model" not in st.session_state:
         if not MODEL_PATH.exists():
             return None
-        sys.path.insert(0, str(ROOT))
-        from src.models.coordatt import CoordAtt, HSigmoid, HSwish, register_coordatt
-        register_coordatt()
-        import __main__
-        for cls in (HSigmoid, HSwish, CoordAtt):
-            setattr(__main__, cls.__name__, cls)
+        if not _COORDATT_OK:
+            return None
         from ultralytics import YOLO
         st.session_state.yolo_model = YOLO(str(MODEL_PATH))
     return st.session_state.yolo_model
 
 
-# ── Page: Inference Playground ───────────────────────────────────────
+# ── Page: Unified Inference (YOLO + Edge + Spatial) ─────────────────
 
 def page_inference():
     st.header("Canli Tahmin (Inference Playground)")
@@ -110,20 +123,26 @@ def page_inference():
         )
         return
 
-    col_upload, col_settings = st.columns([3, 1])
+    # ── Sidebar settings ──
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("YOLO Ayarlari")
+    conf_thresh = st.sidebar.slider("Confidence Esigi", 0.1, 0.95, 0.25, 0.05)
+    iou_thresh = st.sidebar.slider("IoU Esigi (NMS)", 0.1, 0.95, 0.45, 0.05)
+    img_size = st.sidebar.selectbox("Goruntu Boyutu", [640, 416, 320], index=0)
 
-    with col_settings:
-        st.markdown("**Ayarlar**")
-        conf_thresh = st.slider("Confidence Esigi", 0.1, 0.95, 0.25, 0.05)
-        iou_thresh = st.slider("IoU Esigi (NMS)", 0.1, 0.95, 0.45, 0.05)
-        img_size = st.selectbox("Goruntu Boyutu", [640, 416, 320], index=0)
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Edge Enhancement")
+    alpha = st.sidebar.slider("Alpha (orijinal agirlik)", 0.3, 1.0, 0.7, 0.05,
+                              help="1.0 = sadece orijinal, 0.3 = guclu kenar karistirma")
+    canny_low = st.sidebar.slider("Canny Alt Esik", 10, 150, 50, 10)
+    canny_high = st.sidebar.slider("Canny Ust Esik", 50, 300, 150, 10)
 
-    with col_upload:
-        uploaded = st.file_uploader(
-            "Goruntu yukle (JPG/PNG)",
-            type=["jpg", "jpeg", "png", "bmp", "webp"],
-            accept_multiple_files=True,
-        )
+    # ── Upload ──
+    uploaded = st.file_uploader(
+        "Goruntu yukle (JPG/PNG)",
+        type=["jpg", "jpeg", "png", "bmp", "webp"],
+        accept_multiple_files=True,
+    )
 
     if not uploaded:
         st.info("Bir veya birden fazla goruntu yukleyin, model anlik tahmin yapsin.")
@@ -137,7 +156,10 @@ def page_inference():
                 for i, sample in enumerate(samples[:3]):
                     with sample_cols[i]:
                         if st.button(f"Tara: {sample.name}", key=f"sample_{i}"):
-                            _run_inference(model, str(sample), conf_thresh, iou_thresh, img_size)
+                            _run_full_analysis(
+                                model, str(sample), conf_thresh, iou_thresh,
+                                img_size, alpha, canny_low, canny_high,
+                            )
         return
 
     for file in uploaded:
@@ -146,31 +168,35 @@ def page_inference():
         tmp_path = REPORTS_DIR / f"_tmp_upload_{file.name}"
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         tmp_path.write_bytes(file.getvalue())
-        _run_inference(model, str(tmp_path), conf_thresh, iou_thresh, img_size)
+        _run_full_analysis(
+            model, str(tmp_path), conf_thresh, iou_thresh,
+            img_size, alpha, canny_low, canny_high,
+        )
         # Cleanup
         if tmp_path.exists():
             tmp_path.unlink()
 
 
-def _run_inference(model, image_path: str, conf: float, iou: float, imgsz: int):
-    """Run YOLO inference and display results."""
-    t0 = time.perf_counter()
-    results = model.predict(
-        image_path, imgsz=imgsz, conf=conf, iou=iou, verbose=False
-    )
-    latency = (time.perf_counter() - t0) * 1000
+def _run_full_analysis(
+    model, image_path: str, conf: float, iou: float, imgsz: int,
+    alpha: float, canny_low: int, canny_high: int,
+):
+    """Run YOLO + Edge Enhancement + Spatial analysis on one image."""
 
+    # ─── Section 1: YOLO Inference ───
+    st.subheader("1. YOLO Tespit")
+    t0 = time.perf_counter()
+    results = model.predict(image_path, imgsz=imgsz, conf=conf, iou=iou, verbose=False)
+    latency = (time.perf_counter() - t0) * 1000
     result = results[0]
     boxes = result.boxes
 
     col_img, col_info = st.columns([2, 1])
 
     with col_img:
-        # Draw annotated image
         annotated = result.plot()
-        # Convert BGR to RGB for streamlit
         annotated_rgb = annotated[:, :, ::-1]
-        st.image(annotated_rgb, caption="Tahmin Sonucu", use_container_width=True)
+        st.image(annotated_rgb, caption="Tahmin Sonucu", width="stretch")
 
     with col_info:
         st.metric("Latency", f"{latency:.1f} ms")
@@ -197,7 +223,7 @@ def _run_inference(model, image_path: str, conf: float, iou: float, imgsz: int):
 
         # Feedback buttons
         st.markdown("---")
-        st.markdown("**Geri Bildirim (Active Learning):**")
+        st.markdown("**Geri Bildirim:**")
         fb_col1, fb_col2 = st.columns(2)
         img_name = Path(image_path).name
         with fb_col1:
@@ -207,7 +233,91 @@ def _run_inference(model, image_path: str, conf: float, iou: float, imgsz: int):
         with fb_col2:
             if st.button("Yanlis", key=f"wrong_{img_name}", type="primary", use_container_width=True):
                 _save_feedback(img_name, "incorrect", len(boxes))
-                st.error("Geri bildirim kaydedildi. Active Learning icin isaretlendi.")
+                st.error("Geri bildirim kaydedildi.")
+
+    # ─── Section 2: Edge Enhancement ───
+    st.markdown("---")
+    st.subheader("2. Edge Enhancement (Canny Onisleme)")
+    try:
+        from src.data.edge_enhancer import preview_enhancement
+
+        original_rgb, edges_rgb, blended_rgb = preview_enhancement(
+            image_path, alpha, canny_low, canny_high
+        )
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.image(original_rgb, caption="Orijinal", width="stretch")
+        with col2:
+            st.image(edges_rgb, caption="Canny Kenarlar", width="stretch")
+        with col3:
+            st.image(blended_rgb, caption=f"Harmanlanmis (a={alpha})", width="stretch")
+
+        # YOLO comparison
+        st.markdown("**YOLO Karsilastirmasi:**")
+        col_orig, col_enhanced = st.columns(2)
+
+        with col_orig:
+            st.markdown("*Orijinal ile Tespit*")
+            ann1 = result.plot()[:, :, ::-1]
+            st.image(ann1, width="stretch")
+            st.caption(f"Tespit: {len(result.boxes)}")
+
+        with col_enhanced:
+            st.markdown("*Enhanced ile Tespit*")
+            enhanced_path = REPORTS_DIR / f"_tmp_edge_enhanced_{Path(image_path).name}"
+            enhanced_bgr = cv2.cvtColor(blended_rgb, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(str(enhanced_path), enhanced_bgr)
+            r2 = model.predict(str(enhanced_path), imgsz=imgsz, conf=conf, iou=iou, verbose=False)
+            ann2 = r2[0].plot()[:, :, ::-1]
+            st.image(ann2, width="stretch")
+            st.caption(f"Tespit: {len(r2[0].boxes)}")
+            if enhanced_path.exists():
+                enhanced_path.unlink()
+
+    except Exception as e:
+        st.warning(f"Edge Enhancement yuklenemedi: {e}")
+
+    # ─── Section 3: Spatial Clustering ───
+    st.markdown("---")
+    st.subheader("3. Geometrik Mekansal Kumeleme")
+    try:
+        from src.reasoning.spatial_logic import (
+            SpatialAnalyzer, detections_from_yolo_result,
+        )
+
+        detections = detections_from_yolo_result(result)
+        analyzer = SpatialAnalyzer(n_clusters=4)
+        spatial_result = analyzer.analyze_frame(detections, img_shape=result.orig_shape)
+
+        col_simg, col_sresult = st.columns([2, 1])
+
+        with col_simg:
+            _draw_spatial_overlay(result, spatial_result)
+
+        with col_sresult:
+            verdict_colors = {"OK": "green", "missing_screw": "orange", "missing_component": "red"}
+            verdict_color = verdict_colors.get(spatial_result.verdict, "gray")
+            st.markdown(f"### :{verdict_color}[{spatial_result.verdict.upper()}]")
+            st.metric("Tespit Sayisi", spatial_result.detection_count)
+            st.metric("Ort. Confidence", f"{spatial_result.confidence:.1%}")
+
+            st.markdown("---")
+            st.markdown(f"**Neden:** {spatial_result.reason}")
+            st.markdown(f"**Sol Taraf:** `{spatial_result.left_status}`")
+            st.markdown(f"**Sag Taraf:** `{spatial_result.right_status}`")
+
+            if spatial_result.clusters:
+                st.markdown("---")
+                for cluster in spatial_result.clusters:
+                    st.markdown(
+                        f"- Kume {cluster.cluster_id} ({cluster.side}): "
+                        f"**{cluster.dominant_class}** "
+                        f"({len(cluster.detections)} tespit)"
+                    )
+
+    except Exception as e:
+        st.warning(f"Mekansal analiz yuklenemedi: {e}")
 
 
 def _color_name(hex_color: str) -> str:
@@ -228,6 +338,38 @@ def _save_feedback(image_name: str, label: str, det_count: int):
     }
     with feedback_file.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def _draw_spatial_overlay(yolo_result, spatial_result):
+    """Draw annotated image with cluster boundaries and side labels."""
+    annotated = yolo_result.plot()
+
+    h, w = annotated.shape[:2]
+    mid_x = w // 2
+
+    # Draw center dividing line
+    cv2.line(annotated, (mid_x, 0), (mid_x, h), (255, 255, 0), 2)
+    cv2.putText(annotated, "SOL", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+    cv2.putText(annotated, "SAG", (w - 80, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+
+    # Draw cluster centers
+    cluster_colors = [(0, 255, 0), (0, 165, 255), (0, 0, 255), (255, 0, 255)]
+    for cluster in spatial_result.clusters:
+        cx, cy = int(cluster.center[0]), int(cluster.center[1])
+        color = cluster_colors[cluster.cluster_id % len(cluster_colors)]
+        cv2.circle(annotated, (cx, cy), 12, color, 3)
+        label = f"K{cluster.cluster_id}:{cluster.dominant_class[:3]}"
+        cv2.putText(annotated, label, (cx - 30, cy - 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+    # Draw verdict
+    verdict_colors = {"OK": (0, 255, 0), "missing_screw": (0, 165, 255), "missing_component": (0, 0, 255)}
+    v_color = verdict_colors.get(spatial_result.verdict, (128, 128, 128))
+    cv2.putText(annotated, f"VERDICT: {spatial_result.verdict.upper()}",
+                (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.9, v_color, 2)
+
+    annotated_rgb = annotated[:, :, ::-1]
+    st.image(annotated_rgb, caption="Mekansal Analiz Sonucu", width="stretch")
 
 
 # ── Page: Data & Balance ─────────────────────────────────────────────
@@ -277,7 +419,7 @@ def page_data():
 
     if LATEST_PNG.exists():
         with st.expander("Augmentation Analizi (Detay Grafik)"):
-            st.image(str(LATEST_PNG), use_container_width=True)
+            st.image(str(LATEST_PNG), width="stretch")
 
 
 def _render_distribution_plot(before: dict, after: dict):
@@ -421,7 +563,7 @@ def page_mlflow():
                          "Duyarlilik", "Kutu kaybi", "Sinif kaybi",
                          "Val kutu kaybi", "Val sinif kaybi"],
         }
-        st.dataframe(metrics_data, use_container_width=True, hide_index=True)
+        st.dataframe(metrics_data, hide_index=True)
 
     with col2:
         st.subheader("Hizli Baslangic")
@@ -439,7 +581,7 @@ mlflow ui --port 5000
                           "amp", "seed", "optimizer"],
             "Deger": ["100", "8", "640", "25", "10", "True", "42", "auto"],
         }
-        st.dataframe(params, use_container_width=True, hide_index=True)
+        st.dataframe(params, hide_index=True)
 
 
 # ── Page: VLM Strategy ───────────────────────────────────────────────
@@ -537,7 +679,7 @@ def page_edge():
         st.subheader("Jetson Orin Nano 8GB Specs")
         specs = {"Ozellik": ["GPU", "AI TOPS (sparse)", "RAM", "Guc Modlari"],
                  "Deger": ["Ampere 1024 CUDA", "67 TOPS", "8GB LPDDR5 (shared)", "7W / 15W / 25W"]}
-        st.dataframe(specs, use_container_width=True, hide_index=True)
+        st.dataframe(specs, hide_index=True)
         return
 
     local = profile.get("local_latency_ms", {})
@@ -599,7 +741,7 @@ def page_fp_analysis():
     if feedback["total"] == 0:
         st.info(
             "Henuz operator geri bildirimi yok.\n\n"
-            "**Inference Playground** sekmesinden goruntu tarayip "
+            "**Canli Tahmin** sekmesinden goruntu tarayip "
             "'Dogru' / 'Yanlis' butonlariyla geri bildirim verin."
         )
 
@@ -637,7 +779,7 @@ def page_fp_analysis():
     st.markdown("---")
     st.subheader("Son Geri Bildirimler")
     recent = feedback["files"][-20:][::-1]
-    st.dataframe(recent, use_container_width=True, hide_index=True)
+    st.dataframe(recent, hide_index=True)
 
 
 # ── Page: Decisions ──────────────────────────────────────────────────
@@ -668,7 +810,7 @@ def page_decisions():
             {"Konu": "Concept Drift", "Karar": "Phase 2'de test",
              "Detay": "Isik degisimi testleri planlanacak."},
         ]
-        st.dataframe(decisions, use_container_width=True, hide_index=True)
+        st.dataframe(decisions, hide_index=True)
 
     with tab_risks:
         st.markdown("""
@@ -763,288 +905,11 @@ def page_operator():
         })
 
 
-# ── Page: Edge Enhancement ──────────────────────────────────────────
-
-def page_edge_enhancement():
-    st.header("Edge Enhancement (Canny Onisleme)")
-
-    st.markdown(
-        "Metal yuzey yansimalarini bastirmak icin Canny kenar haritasi "
-        "orijinal goruntuyle harmanlanir. Bu, YOLO'nun parlak yuzeyler "
-        "uzerindeki vida detaylarini daha iyi algilamasini saglar."
-    )
-
-    col_upload, col_params = st.columns([3, 1])
-
-    with col_params:
-        st.markdown("**Parametreler**")
-        alpha = st.slider("Alpha (orijinal agirlik)", 0.3, 1.0, 0.7, 0.05,
-                          help="1.0 = sadece orijinal, 0.3 = guclu kenar karistirma")
-        canny_low = st.slider("Canny Alt Esik", 10, 150, 50, 10)
-        canny_high = st.slider("Canny Ust Esik", 50, 300, 150, 10)
-
-    with col_upload:
-        uploaded = st.file_uploader(
-            "Goruntu yukle",
-            type=["jpg", "jpeg", "png", "bmp"],
-            key="edge_upload",
-        )
-
-    if not uploaded:
-        st.info("Bir goruntu yukleyin, edge enhancement onizlemesini gorun.")
-
-        # Show example explanation
-        with st.expander("Nasil Calisir?"):
-            st.markdown("""
-**Adimlar:**
-1. Orijinal goruntu grayscale'e cevrilir
-2. Canny kenar dedektoru uygulanir (alt/ust esik)
-3. Kenar haritasi RGB'ye cevrilir
-4. `blended = alpha * original + (1-alpha) * edges`
-
-**Parametreler:**
-- **Alpha**: Dusuk deger = kenarlar daha belirgin, yuksek deger = orijinale yakin
-- **Canny Alt Esik**: Dusuk = daha fazla kenar, yuksek = sadece guclu kenarlar
-- **Canny Ust Esik**: Kenar baglama esigi (genelde alt esigin 2-3 kati)
-
-**Kullanim Alani:**
-- Parlak metal yuzeyler (vida yansimalari)
-- Dusuk kontrast goruntuler
-- Arka plan-nesne ayirimi zayif durumlar
-""")
-        return
-
-    # Process uploaded image
-    tmp_path = REPORTS_DIR / f"_tmp_edge_{uploaded.name}"
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    tmp_path.write_bytes(uploaded.getvalue())
-
-    try:
-        sys.path.insert(0, str(ROOT))
-        from src.data.edge_enhancer import preview_enhancement
-
-        original_rgb, edges_rgb, blended_rgb = preview_enhancement(
-            str(tmp_path), alpha, canny_low, canny_high
-        )
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.image(original_rgb, caption="Orijinal", use_container_width=True)
-        with col2:
-            st.image(edges_rgb, caption="Canny Kenarlar", use_container_width=True)
-        with col3:
-            st.image(blended_rgb, caption=f"Harmanlanmis (a={alpha})", use_container_width=True)
-
-        # Compare with YOLO
-        st.markdown("---")
-        st.subheader("YOLO Karsilastirmasi")
-        model = get_model()
-        if model is not None:
-            col_orig, col_enhanced = st.columns(2)
-
-            with col_orig:
-                st.markdown("**Orijinal ile Tespit**")
-                r1 = model.predict(str(tmp_path), imgsz=640, conf=0.25, verbose=False)
-                ann1 = r1[0].plot()[:, :, ::-1]
-                st.image(ann1, use_container_width=True)
-                st.caption(f"Tespit sayisi: {len(r1[0].boxes)}")
-
-            with col_enhanced:
-                st.markdown("**Enhanced ile Tespit**")
-                enhanced_path = REPORTS_DIR / f"_tmp_edge_enhanced_{uploaded.name}"
-                enhanced_bgr = cv2.cvtColor(blended_rgb, cv2.COLOR_RGB2BGR)
-                cv2.imwrite(str(enhanced_path), enhanced_bgr)
-                r2 = model.predict(str(enhanced_path), imgsz=640, conf=0.25, verbose=False)
-                ann2 = r2[0].plot()[:, :, ::-1]
-                st.image(ann2, use_container_width=True)
-                st.caption(f"Tespit sayisi: {len(r2[0].boxes)}")
-                if enhanced_path.exists():
-                    enhanced_path.unlink()
-        else:
-            st.info("Model yuklenmedi - YOLO karsilastirmasi icin modeli yukleyin.")
-    except Exception as e:
-        st.error(f"Islem hatasi: {e}")
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
-
-
-# ── Page: Spatial Clustering ────────────────────────────────────────
-
-def page_spatial():
-    st.header("Geometrik Mekansal Kumeleme")
-
-    st.markdown(
-        "YOLO tespitlerini urunun fiziksel geometrisine gore analiz eder. "
-        "4 vida pozisyonu (sol 2, sag 2) beklenir. Sol/sag taraf durumuna "
-        "gore karar matrisi uygulanir."
-    )
-
-    # Decision matrix display
-    with st.expander("Karar Matrisi", expanded=True):
-        matrix_data = {
-            "Sol Taraf": ["S (Vida Var)", "MS (Vida Eksik)", "S (Vida Var)", "MS (Vida Eksik)", "MC Tespiti"],
-            "Sag Taraf": ["S (Vida Var)", "S (Vida Var)", "MS (Vida Eksik)", "MS (Vida Eksik)", "Herhangi"],
-            "Sonuc": ["OK", "missing_screw (sol)", "missing_screw (sag)", "missing_component (kesin)", "missing_component"],
-            "Renk": ["yesil", "turuncu", "turuncu", "kirmizi", "kirmizi"],
-        }
-        st.dataframe(
-            {k: v for k, v in matrix_data.items() if k != "Renk"},
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    st.markdown("---")
-
-    # Upload and analyze
-    uploaded = st.file_uploader(
-        "Goruntu yukle (YOLO + Spatial analiz)",
-        type=["jpg", "jpeg", "png", "bmp"],
-        key="spatial_upload",
-    )
-
-    if not uploaded:
-        st.info("Goruntu yukleyin, YOLO tespiti + mekansal analiz sonuclarini gorun.")
-
-        # Show architecture diagram
-        _draw_spatial_diagram()
-        return
-
-    model = get_model()
-    if model is None:
-        st.error("Model bulunamadi: `models/phase1_final_ca.pt`")
-        return
-
-    tmp_path = REPORTS_DIR / f"_tmp_spatial_{uploaded.name}"
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    tmp_path.write_bytes(uploaded.getvalue())
-
-    try:
-        sys.path.insert(0, str(ROOT))
-        from src.reasoning.spatial_logic import (
-            SpatialAnalyzer, Detection, detections_from_yolo_result,
-        )
-
-        # Run YOLO
-        results = model.predict(str(tmp_path), imgsz=640, conf=0.25, verbose=False)
-        result = results[0]
-        detections = detections_from_yolo_result(result)
-
-        # Run spatial analysis
-        analyzer = SpatialAnalyzer(n_clusters=4)
-        spatial_result = analyzer.analyze_frame(detections, img_shape=result.orig_shape)
-
-        # Display results
-        col_img, col_result = st.columns([2, 1])
-
-        with col_img:
-            _draw_spatial_overlay(result, spatial_result)
-
-        with col_result:
-            # Verdict badge
-            verdict_colors = {"OK": "green", "missing_screw": "orange", "missing_component": "red"}
-            verdict_color = verdict_colors.get(spatial_result.verdict, "gray")
-            st.markdown(f"### :{verdict_color}[{spatial_result.verdict.upper()}]")
-            st.metric("Tespit Sayisi", spatial_result.detection_count)
-            st.metric("Ortalama Confidence", f"{spatial_result.confidence:.1%}")
-
-            st.markdown("---")
-            st.markdown(f"**Neden:** {spatial_result.reason}")
-            st.markdown(f"**Sol Taraf:** `{spatial_result.left_status}`")
-            st.markdown(f"**Sag Taraf:** `{spatial_result.right_status}`")
-
-            st.markdown("---")
-            st.markdown(f"**Kume Sayisi:** {len(spatial_result.clusters)}")
-            for cluster in spatial_result.clusters:
-                st.markdown(
-                    f"- Kume {cluster.cluster_id} ({cluster.side}): "
-                    f"**{cluster.dominant_class}** "
-                    f"({len(cluster.detections)} tespit, "
-                    f"conf={cluster.avg_confidence:.1%})"
-                )
-
-    except Exception as e:
-        st.error(f"Analiz hatasi: {e}")
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
-
-
-def _draw_spatial_overlay(yolo_result, spatial_result):
-    """Draw annotated image with cluster boundaries and side labels."""
-    annotated = yolo_result.plot()
-
-    h, w = annotated.shape[:2]
-    mid_x = w // 2
-
-    # Draw center dividing line
-    cv2.line(annotated, (mid_x, 0), (mid_x, h), (255, 255, 0), 2)
-    cv2.putText(annotated, "SOL", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
-    cv2.putText(annotated, "SAG", (w - 80, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
-
-    # Draw cluster centers
-    cluster_colors = [(0, 255, 0), (0, 165, 255), (0, 0, 255), (255, 0, 255)]
-    for cluster in spatial_result.clusters:
-        cx, cy = int(cluster.center[0]), int(cluster.center[1])
-        color = cluster_colors[cluster.cluster_id % len(cluster_colors)]
-        cv2.circle(annotated, (cx, cy), 12, color, 3)
-        label = f"K{cluster.cluster_id}:{cluster.dominant_class[:3]}"
-        cv2.putText(annotated, label, (cx - 30, cy - 18),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
-    # Draw verdict
-    verdict_colors = {"OK": (0, 255, 0), "missing_screw": (0, 165, 255), "missing_component": (0, 0, 255)}
-    v_color = verdict_colors.get(spatial_result.verdict, (128, 128, 128))
-    cv2.putText(annotated, f"VERDICT: {spatial_result.verdict.upper()}",
-                (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.9, v_color, 2)
-
-    annotated_rgb = annotated[:, :, ::-1]
-    st.image(annotated_rgb, caption="Mekansal Analiz Sonucu", use_container_width=True)
-
-
-def _draw_spatial_diagram():
-    """Draw the spatial clustering architecture diagram."""
-    fig, ax = plt.subplots(figsize=(12, 4), dpi=130)
-    ax.set_xlim(0, 12)
-    ax.set_ylim(0, 4.5)
-    ax.axis("off")
-
-    boxes = [
-        (0.2, 1.5, 2.0, 1.5, "YOLO\nTespit", "#1565C0"),
-        (2.8, 1.5, 2.2, 1.5, "K-Means\nKumeleme\n(k=4)", "#FF9800"),
-        (5.6, 1.5, 2.2, 1.5, "Sol/Sag\nAtama", "#7B1FA2"),
-        (8.4, 1.5, 2.2, 1.5, "Karar\nMatrisi", "#D32F2F"),
-        (8.4, 0.0, 2.2, 1.0, "OK / NOK\nSonuc", "#4CAF50"),
-    ]
-
-    for bx, by, bw, bh, text, color in boxes:
-        rect = mpatches.FancyBboxPatch(
-            (bx, by), bw, bh, boxstyle="round,pad=0.1",
-            facecolor=color, edgecolor="white", alpha=0.9, linewidth=1.5,
-        )
-        ax.add_patch(rect)
-        ax.text(bx + bw / 2, by + bh / 2, text,
-                ha="center", va="center", fontsize=9, fontweight="bold", color="white")
-
-    arrow_kw = dict(arrowstyle="-|>", color="#333", lw=1.8)
-    ax.annotate("", xy=(2.8, 2.25), xytext=(2.2, 2.25), arrowprops=arrow_kw)
-    ax.annotate("", xy=(5.6, 2.25), xytext=(5.0, 2.25), arrowprops=arrow_kw)
-    ax.annotate("", xy=(8.4, 2.25), xytext=(7.8, 2.25), arrowprops=arrow_kw)
-    ax.annotate("", xy=(9.5, 1.5), xytext=(9.5, 1.0), arrowprops=arrow_kw)
-
-    ax.set_title("Geometrik Mekansal Kumeleme Mimarisi", fontsize=11, fontweight="bold")
-    fig.tight_layout()
-    st.pyplot(fig)
-    plt.close(fig)
-
-
 # ── Main ─────────────────────────────────────────────────────────────
 
 PAGES = {
     "Canli Tahmin": page_inference,
     "Veri & Dengeleme": page_data,
-    "Edge Enhancement": page_edge_enhancement,
-    "Spatial Clustering": page_spatial,
     "Neden CA?": page_ca,
     "MLflow Takibi": page_mlflow,
     "VLM Stratejisi": page_vlm,
