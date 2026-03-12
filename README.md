@@ -66,6 +66,12 @@ python src/data/augment_analysis.py --clean-augmented  # remove old weak labels 
 python src/data/augment_analysis.py --source-dir coklanmis --source-dir coklanmisacili
 ```
 
+Fast V2 pipeline (base split + augmented ingestion):
+
+```bash
+python scripts/prepare_v2_dataset.py
+```
+
 Outputs:
 
 - `reports/generated/augmentation_imbalance_latest.json`

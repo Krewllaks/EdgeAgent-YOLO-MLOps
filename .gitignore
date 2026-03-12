@@ -38,14 +38,20 @@ erdogan1/
 erdogan2/
 roboflowetiketlenen/
 coklanmis/
+coklanmisacili/
 data/raw/
 data/interim/
 data/processed/
 data/external/
+data/feedback/
+
+# Local agent workspace
+.claude/
 
 # Training logs and experiment outputs
 runs/
 mlruns/
+mlflow.db
 wandb/
 logs/
 
