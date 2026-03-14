@@ -1,0 +1,1 @@
+{"timestamp": "2026-03-10T17:51:45", "frame": 1, "class_name": "screw", "confidence": 0.287784218788147, "reasoning": "Potential screw anomaly (confidence=0.288). Recommend operator review and line station check.", "action": "dashboard_alert"}

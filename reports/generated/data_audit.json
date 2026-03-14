@@ -1,0 +1,192 @@
+{
+  "erdogan1": {
+    "path": "C:\\Users\\bahti\\Desktop\\Goruntuisleme\\erdogan1",
+    "exists": true,
+    "files_total": 3566,
+    "file_types": {
+      ".jpg": 2234,
+      ".txt": 1331,
+      ".yaml": 1
+    },
+    "images_total": 2234,
+    "image_sizes_top5": [
+      [
+        "1280x820",
+        871
+      ],
+      [
+        "864x600",
+        813
+      ],
+      [
+        "800x480",
+        454
+      ],
+      [
+        "800x600",
+        92
+      ],
+      [
+        "576x280",
+        3
+      ]
+    ],
+    "duplicate_filenames": 7,
+    "top_level_breakdown": {
+      "model": 2661,
+      "NOK fotoğraflar": 905
+    }
+  },
+  "erdogan2": {
+    "path": "C:\\Users\\bahti\\Desktop\\Goruntuisleme\\erdogan2",
+    "exists": true,
+    "files_total": 1109,
+    "file_types": {
+      ".jpg": 1103,
+      ".zip": 2,
+      ".py": 2,
+      ".pt": 2
+    },
+    "images_total": 1103,
+    "image_sizes_top5": [
+      [
+        "864x600",
+        811
+      ],
+      [
+        "1000x700",
+        200
+      ],
+      [
+        "800x600",
+        92
+      ]
+    ],
+    "duplicate_filenames": 7,
+    "top_level_breakdown": {
+      "MLOps Çalışmaları": 1109
+    }
+  },
+  "roboflowetiketlenen": {
+    "path": "C:\\Users\\bahti\\Desktop\\Goruntuisleme\\roboflowetiketlenen",
+    "exists": true,
+    "files_total": 899,
+    "file_types": {
+      ".jpg": 897,
+      ".txt": 1,
+      ".json": 1
+    },
+    "images_total": 897,
+    "image_sizes_top5": [
+      [
+        "864x600",
+        807
+      ],
+      [
+        "800x600",
+        90
+      ]
+    ],
+    "duplicate_filenames": 0,
+    "top_level_breakdown": {
+      "train": 898,
+      "README.roboflow.txt": 1
+    }
+  },
+  "erdogan1_model": {
+    "path": "C:\\Users\\bahti\\Desktop\\Goruntuisleme\\erdogan1\\model",
+    "exists": true,
+    "files_total": 2661,
+    "file_types": {
+      ".txt": 1331,
+      ".jpg": 1329,
+      ".yaml": 1
+    },
+    "images_total": 1329,
+    "image_sizes_top5": [
+      [
+        "1280x820",
+        871
+      ],
+      [
+        "800x480",
+        454
+      ],
+      [
+        "576x280",
+        3
+      ],
+      [
+        "640x280",
+        1
+      ]
+    ],
+    "duplicate_filenames": 0,
+    "top_level_breakdown": {
+      "train": 2388,
+      "valid": 184,
+      "test": 86,
+      "data.yaml": 1,
+      "README.dataset.txt": 1,
+      "README.roboflow.txt": 1
+    }
+  },
+  "erdogan1_nok": {
+    "path": "C:\\Users\\bahti\\Desktop\\Goruntuisleme\\erdogan1\\NOK fotoğraflar",
+    "exists": true,
+    "files_total": 905,
+    "file_types": {
+      ".jpg": 905
+    },
+    "images_total": 905,
+    "image_sizes_top5": [
+      [
+        "864x600",
+        813
+      ],
+      [
+        "800x600",
+        92
+      ]
+    ],
+    "duplicate_filenames": 7,
+    "top_level_breakdown": {
+      "defected_camera1": 813,
+      "defected_camera2": 92
+    }
+  },
+  "erdogan2_mlops": {
+    "path": "C:\\Users\\bahti\\Desktop\\Goruntuisleme\\erdogan2\\MLOps Çalışmaları",
+    "exists": true,
+    "files_total": 1109,
+    "file_types": {
+      ".jpg": 1103,
+      ".zip": 2,
+      ".py": 2,
+      ".pt": 2
+    },
+    "images_total": 1103,
+    "image_sizes_top5": [
+      [
+        "864x600",
+        811
+      ],
+      [
+        "1000x700",
+        200
+      ],
+      [
+        "800x600",
+        92
+      ]
+    ],
+    "duplicate_filenames": 7,
+    "top_level_breakdown": {
+      "NOK fotoğraflar": 903,
+      "OK fotoğraflar": 200,
+      "Codes": 3,
+      "models": 2,
+      "Ray-Makara.v4i.yolov11.zip": 1
+    }
+  }
+}

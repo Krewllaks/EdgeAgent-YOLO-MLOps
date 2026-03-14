@@ -1,0 +1,14 @@
+artifact_uri: file:C:/Users/bahti/Desktop/Goruntuisleme/runs/mlflow/838687865351777662/ad42f6f6232d45b090f5b5022eeb4adb/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '838687865351777662'
+lifecycle_stage: active
+run_id: ad42f6f6232d45b090f5b5022eeb4adb
+run_name: yolov10s_ca_v2_smoke
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1773265807546
+status: 1
+tags: []
+user_id: BahtiyarSelimDogus

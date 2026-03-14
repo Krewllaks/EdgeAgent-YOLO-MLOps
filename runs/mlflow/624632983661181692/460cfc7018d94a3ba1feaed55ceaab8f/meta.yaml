@@ -1,0 +1,14 @@
+artifact_uri: file:C:/Users/bahti/Desktop/Goruntuisleme/runs/mlflow/624632983661181692/460cfc7018d94a3ba1feaed55ceaab8f/artifacts
+end_time: 1773075825113
+entry_point_name: ''
+experiment_id: '624632983661181692'
+lifecycle_stage: active
+run_id: 460cfc7018d94a3ba1feaed55ceaab8f
+run_name: smoke_phase12
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1773075765267
+status: 3
+tags: []
+user_id: BahtiyarSelimDogus

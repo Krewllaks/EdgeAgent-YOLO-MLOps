@@ -1,0 +1,9 @@
+path: C:/Users/bahti/Desktop/Goruntuisleme/data/processed/phase1_v2
+train: train/images
+val: val/images
+test: test/images
+nc: 3
+names:
+- screw
+- missing_screw
+- missing_component

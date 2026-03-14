@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 1
+names: ['vida-ok']
+
+roboflow:
+  workspace: staj-ceawj
+  project: ray-makara
+  version: 4
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/staj-ceawj/ray-makara/dataset/4

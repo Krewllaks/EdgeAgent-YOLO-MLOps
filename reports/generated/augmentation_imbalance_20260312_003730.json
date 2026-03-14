@@ -1,0 +1,74 @@
+{
+  "source_dirs": [
+    "C:\\Users\\bahti\\Desktop\\Goruntuisleme\\coklanmis",
+    "C:\\Users\\bahti\\Desktop\\Goruntuisleme\\coklanmisacili"
+  ],
+  "dataset_dir": "C:\\Users\\bahti\\Desktop\\Goruntuisleme\\data\\processed\\phase1_v2",
+  "split_image_counts_before": {
+    "train": 717,
+    "val": 89,
+    "test": 91
+  },
+  "before_train_distribution": {
+    "total_images": 717,
+    "background_images": 0,
+    "instance_counts": {
+      "0": 1762,
+      "1": 16,
+      "2": 4
+    },
+    "image_presence_counts": {
+      "0": 715,
+      "1": 10,
+      "2": 2
+    }
+  },
+  "after_train_distribution": {
+    "total_images": 2328,
+    "background_images": 0,
+    "instance_counts": {
+      "0": 2630,
+      "1": 480,
+      "2": 283
+    },
+    "image_presence_counts": {
+      "0": 1583,
+      "1": 474,
+      "2": 281
+    }
+  },
+  "source_candidates": {
+    "screw": 889,
+    "missing_screw": 501,
+    "missing_component": 317,
+    "background_raw": 0,
+    "background_selected": 0
+  },
+  "integration_stats": {
+    "added": {
+      "screw": 868,
+      "missing_screw": 464,
+      "missing_component": 279,
+      "background": 0
+    },
+    "skipped_duplicate_train": 96,
+    "skipped_duplicate_batch": 0,
+    "skipped_leakage_valtest": 0,
+    "skipped_no_label": 0,
+    "used_existing_label": 0,
+    "used_folder_label": 1611
+  },
+  "ignored_folders": [],
+  "params": {
+    "seed": 42,
+    "max_background": 2500,
+    "background_ratio": 1.5,
+    "clean_augmented": true,
+    "allow_folder_labels": true,
+    "fallback_bbox": "0.5 0.5 0.8 0.8"
+  },
+  "artifacts": {
+    "chart": "C:\\Users\\bahti\\Desktop\\Goruntuisleme\\reports\\generated\\augmentation_imbalance_20260312_003730.png",
+    "latest_chart": "C:\\Users\\bahti\\Desktop\\Goruntuisleme\\reports\\generated\\augmentation_imbalance_latest.png"
+  }
+}

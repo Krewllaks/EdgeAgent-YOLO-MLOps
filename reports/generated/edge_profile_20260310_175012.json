@@ -1,0 +1,32 @@
+{
+  "timestamp": "2026-03-10T17:50:12",
+  "model": "models\\phase1_final_ca.pt",
+  "source": "data\\processed\\phase1_multiclass_v1\\test\\images",
+  "samples": 5,
+  "local_profile": {
+    "avg_latency_ms": 18.297,
+    "p95_latency_ms": 21.815,
+    "throughput_fps": 54.65
+  },
+  "jetson_orin_nano_estimation": {
+    "factor": 6.5,
+    "estimated_latency_ms": 118.933,
+    "estimated_throughput_fps": 8.41,
+    "target_items_per_second": 200.0,
+    "target_budget_ms": 5.0,
+    "needs_tensorrt_optimization": true
+  },
+  "memory_estimation": {
+    "jetson_shared_mem_gb": 8.0,
+    "yolo_peak_gb_est": 0.048,
+    "combined_with_paligemma_4bit_gb_est": 2.448,
+    "combined_with_paligemma_8bit_gb_est": 4.648,
+    "fits_4bit": true,
+    "fits_8bit": true
+  },
+  "notes": [
+    "Orin latency values are heuristic estimates, validate on real device.",
+    "Use TensorRT INT8/FP16 if estimated latency exceeds target budget.",
+    "Use async VLM trigger to avoid blocking main YOLO loop."
+  ]
+}

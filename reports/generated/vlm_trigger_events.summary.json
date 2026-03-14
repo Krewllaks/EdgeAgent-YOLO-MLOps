@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-10T17:51:48",
+  "model": "models\\phase1_final_ca.pt",
+  "source": "data\\processed\\phase1_multiclass_v1\\test\\images",
+  "scanned_images": 91,
+  "triggered_events": 1,
+  "dropped_events": 0,
+  "output": "C:\\Users\\bahti\\Desktop\\Goruntuisleme\\reports\\generated\\vlm_trigger_events.jsonl",
+  "conf_threshold": 0.4
+}

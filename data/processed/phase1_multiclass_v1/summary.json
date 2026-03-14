@@ -1,0 +1,36 @@
+{
+  "source_coco": "C:\\Users\\bahti\\Desktop\\Goruntuisleme\\roboflowetiketlenen\\train\\_annotations.coco.json",
+  "source_images": "C:\\Users\\bahti\\Desktop\\Goruntuisleme\\roboflowetiketlenen\\train",
+  "output_dir": "C:\\Users\\bahti\\Desktop\\Goruntuisleme\\data\\processed\\phase1_multiclass_v1",
+  "seed": 42,
+  "split_sizes": {
+    "train": 717,
+    "val": 89,
+    "test": 91
+  },
+  "class_counts": {
+    "screw": 2223,
+    "missing_screw": 20,
+    "missing_component": 4
+  },
+  "class_counts_by_split": {
+    "train": {
+      "screw": 1762,
+      "missing_screw": 16,
+      "missing_component": 4
+    },
+    "val": {
+      "screw": 222,
+      "missing_screw": 3
+    },
+    "test": {
+      "screw": 239,
+      "missing_screw": 1
+    }
+  },
+  "target_class_order": [
+    "screw",
+    "missing_screw",
+    "missing_component"
+  ]
+}
