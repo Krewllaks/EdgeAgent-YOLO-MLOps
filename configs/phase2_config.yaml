@@ -1,0 +1,46 @@
+# Phase 2: PaliGemma VLM + MLOps Configuration
+# All Phase 2 modules read from this single config file.
+
+vlm:
+  model_id: "google/paligemma-3b-mix-224"
+  quantization: "nf4"                    # BitsAndBytes NF4 (~2.8GB VRAM)
+  max_latency_ms: 2000                   # Operator tolerance: 2 seconds
+  warmup_runs: 2                         # Dummy inferences after load
+  crop_padding_ratio: 0.20               # 20% padding around YOLO bbox
+  max_new_tokens: 256
+  do_sample: false                       # Deterministic output
+  prompt_template: >
+    Analyze this industrial part image.
+    Is there a missing screw, missing component, or is everything OK?
+    Answer in this exact format:
+    DEFECT_TYPE: [missing_screw|missing_component|ok]
+    REASON: [your explanation]
+
+queue:
+  strategy: "priority"                   # priority (lowest conf first) vs fifo
+  max_size: 5                            # Max items in queue
+  drop_policy: "oldest"                  # Drop oldest when full
+
+conflict_resolver:
+  vlm_overrides_spatial: true            # VLM is final arbiter on conflict
+  confidence_threshold: 0.40             # Below this -> trigger VLM
+
+rca:
+  language: "tr"                         # Turkish RCA templates
+
+drift:
+  method: "ssim"
+  window_size: 500                       # Images per comparison window
+  threshold: 0.15                        # SSIM drop that triggers alert
+  check_interval_hours: 24
+
+active_learning:
+  retrain_cycle_days: 14                 # 2-week batch retraining
+  min_feedback_samples: 50              # Minimum corrections before retrain
+  feedback_path: "data/feedback/feedback_log.jsonl"
+
+mqtt:
+  broker: "localhost"
+  port: 1883
+  topic_prefix: "edgeagent/factory"
+  qos: 1
