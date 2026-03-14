@@ -1,10 +1,11 @@
 """EdgeAgent Industrial Quality Control Dashboard.
 
 Multi-page Streamlit dashboard with:
-- Unified inference playground (YOLO + Edge Enhancement + Spatial Clustering)
+- Unified inference playground (YOLO + Edge Enhancement + Spatial Clustering + VLM)
 - Data integration & class balance visualisation
 - CA rationale and MLflow tracking
 - Phase 2 VLM strategy (visual flow diagram)
+- VLM Anomaly Gallery and VLM Metrics pages
 - Edge profiler results
 - False-Positive analysis
 - Active Learning operator feedback
@@ -53,6 +54,25 @@ try:
     _COORDATT_OK = True
 except ImportError:
     _COORDATT_OK = False
+
+# ── VLM Reasoner (Phase 2) ───────────────────────────────────────────
+try:
+    from src.reasoning.vlm_reasoner import VLMReasoner
+    from src.reasoning.conflict_resolver import ConflictResolver, FinalVerdict
+    from src.reasoning.rca_templates import get_rca
+    from src.edge.vlm_trigger import should_trigger_vlm, TriggerConfig
+    _VLM_AVAILABLE = True
+except ImportError:
+    _VLM_AVAILABLE = False
+
+
+def _get_vlm_reasoner():
+    """Get or create VLM reasoner in session state."""
+    if not _VLM_AVAILABLE:
+        return None
+    if "vlm_reasoner" not in st.session_state:
+        st.session_state.vlm_reasoner = None
+    return st.session_state.vlm_reasoner
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -318,6 +338,117 @@ def _run_full_analysis(
 
     except Exception as e:
         st.warning(f"Mekansal analiz yuklenemedi: {e}")
+
+    # ─── Section 4: VLM Reasoning (Phase 2) ───
+    st.markdown("---")
+    st.subheader("4. VLM Akil Yurume (PaliGemma)")
+
+    reasoner = _get_vlm_reasoner()
+    if not _VLM_AVAILABLE:
+        st.info("VLM modulleri yuklenemedi. `pip install transformers` gerekli.")
+    elif reasoner is None or not reasoner.is_loaded:
+        st.info(
+            "VLM modeli yuklenmedi. **Operator Kontrol** sayfasindan "
+            "'VLM Yukle' butonuna basin."
+        )
+        # Still show trigger status
+        try:
+            trigger_config = TriggerConfig(conf_threshold=0.40)
+            should_fire, low_dets, reason = should_trigger_vlm(
+                results, CLASS_NAMES, trigger_config
+            )
+            if should_fire:
+                st.warning(
+                    f"VLM tetiklenirdi! Neden: `{reason}` | "
+                    f"{len(low_dets)} dusuk guvenli tespit"
+                )
+            else:
+                st.success("VLM tetiklenmezdi - tum tespitler yuksek guvenli.")
+        except Exception:
+            pass
+    else:
+        try:
+            trigger_config = TriggerConfig(conf_threshold=0.40)
+            should_fire, low_dets, reason = should_trigger_vlm(
+                results, CLASS_NAMES, trigger_config
+            )
+
+            if should_fire:
+                st.warning(f"VLM tetiklendi! Neden: `{reason}`")
+
+                # Crop and reason
+                img_rgb = cv2.imread(image_path)
+                if img_rgb is not None:
+                    img_rgb = cv2.cvtColor(img_rgb, cv2.COLOR_BGR2RGB)
+
+                    if low_dets and low_dets[0].get("bbox"):
+                        crop = VLMReasoner.crop_region(
+                            img_rgb, tuple(low_dets[0]["bbox"]), 0.20
+                        )
+                    else:
+                        crop = img_rgb
+
+                    vlm_result = reasoner.reason(crop)
+
+                    col_vlm_img, col_vlm_info = st.columns([1, 2])
+                    with col_vlm_img:
+                        st.image(crop, caption="VLM Analiz Bolgesi", width="stretch")
+
+                    with col_vlm_info:
+                        # Show VLM result
+                        if vlm_result.defect_type:
+                            dt_colors = {
+                                "ok": "green",
+                                "missing_screw": "orange",
+                                "missing_component": "red",
+                            }
+                            dt_color = dt_colors.get(vlm_result.defect_type, "gray")
+                            st.markdown(
+                                f"**VLM Karari:** :{dt_color}[**{vlm_result.defect_type}**]"
+                            )
+                        else:
+                            st.markdown("**VLM Karari:** :gray[Belirsiz]")
+
+                        st.metric("VLM Confidence", f"{vlm_result.confidence_estimate:.0%}")
+                        st.metric("VLM Latency", f"{vlm_result.latency_ms:.0f} ms")
+                        st.markdown(f"**Aciklama:** {vlm_result.reasoning}")
+
+                    # Conflict resolution
+                    if _VLM_AVAILABLE:
+                        resolver = ConflictResolver()
+                        yolo_dets = []
+                        for i in range(len(boxes)):
+                            yolo_dets.append({
+                                "class_name": CLASS_NAMES.get(int(boxes.cls[i]), "?"),
+                                "confidence": float(boxes.conf[i]),
+                            })
+
+                        try:
+                            spatial_v = spatial_result.verdict
+                            spatial_s = spatial_result.left_status
+                        except NameError:
+                            spatial_v = None
+                            spatial_s = None
+
+                        final = resolver.resolve(
+                            yolo_dets, spatial_v, spatial_s, vlm_result
+                        )
+
+                        st.markdown("---")
+                        st.markdown("**Nihai Karar (Conflict Resolver):**")
+                        fc = {"ok": "green", "missing_screw": "orange", "missing_component": "red"}
+                        st.markdown(
+                            f"### :{fc.get(final.verdict, 'gray')}[{final.verdict.upper()}]"
+                        )
+                        st.markdown(f"**Kaynak:** `{final.source}` | **Conflict:** `{final.conflict_detected}`")
+                        st.markdown(f"**Reasoning:** {final.reasoning}")
+
+                        with st.expander("RCA (Kok Neden Analizi)"):
+                            st.markdown(final.rca_text)
+            else:
+                st.success("VLM tetiklenmedi - tum tespitler yuksek guvenli.")
+        except Exception as e:
+            st.error(f"VLM analiz hatasi: {e}")
 
 
 def _color_name(hex_color: str) -> str:
@@ -851,6 +982,159 @@ etiketleme kullanilmali. Mevcut augmented etiketler gozden gecirilmeli.
             st.markdown(f"- :{color}[**[{priority}]**] {item}")
 
 
+# ── Page: VLM Anomaly Gallery ────────────────────────────────────────
+
+def page_vlm_gallery():
+    st.header("VLM Anomali Galerisi")
+
+    events_path = REPORTS_DIR / "vlm_trigger_events.jsonl"
+    if not events_path.exists():
+        st.info(
+            "Henuz VLM trigger event'i yok.\n\n"
+            "VLM trigger'i calistirmak icin:\n"
+            "`python src/edge/vlm_trigger.py --model models/phase1_final_ca.pt`"
+        )
+        return
+
+    # Load events
+    events = []
+    for line in events_path.read_text(encoding="utf-8").strip().split("\n"):
+        if line.strip():
+            events.append(json.loads(line))
+
+    if not events:
+        st.info("Event dosyasi bos.")
+        return
+
+    # Filter
+    reasons = sorted(set(e.get("trigger_reason", "?") for e in events))
+    selected_reason = st.selectbox("Trigger Nedeni Filtrele", ["Tumu"] + reasons)
+
+    if selected_reason != "Tumu":
+        events = [e for e in events if e.get("trigger_reason") == selected_reason]
+
+    st.metric("Toplam Event", len(events))
+    st.markdown("---")
+
+    # Display events in reverse chronological order
+    for i, event in enumerate(reversed(events[-50:])):
+        with st.expander(
+            f"{event.get('timestamp', '?')} | {event.get('image_path', '?')} | "
+            f"Neden: {event.get('trigger_reason', '?')}",
+            expanded=(i < 3),
+        ):
+            col_info, col_vlm = st.columns([1, 2])
+            with col_info:
+                st.markdown(f"**Gorsel:** `{event.get('image_path', '?')}`")
+                st.markdown(f"**Neden:** `{event.get('trigger_reason', '?')}`")
+                low_dets = event.get("low_conf_detections", [])
+                if low_dets:
+                    st.markdown(f"**Dusuk Guvenli Tespitler:** {len(low_dets)}")
+                    for det in low_dets:
+                        st.markdown(
+                            f"  - `{det.get('class', '?')}` "
+                            f"conf={det.get('confidence', 0):.4f}"
+                        )
+
+            with col_vlm:
+                vlm_resp = event.get("vlm_response", "Yok")
+                if vlm_resp and "[VLM]" in vlm_resp:
+                    st.success(f"**VLM Sonucu:** {vlm_resp}")
+                elif vlm_resp and "[SIMULATED]" in vlm_resp:
+                    st.warning(f"**Simule:** {vlm_resp}")
+                else:
+                    st.info(f"**Yanit:** {vlm_resp or 'Yok'}")
+
+
+# ── Page: VLM Metrics ───────────────────────────────────────────────
+
+def page_vlm_metrics():
+    st.header("VLM Performans Metrikleri")
+
+    # VLM model status
+    reasoner = _get_vlm_reasoner()
+    st.subheader("Model Durumu")
+    s1, s2, s3 = st.columns(3)
+    s1.metric("VLM Modulu", "Mevcut" if _VLM_AVAILABLE else "Eksik")
+    s2.metric("Model Yuklendi", "Evet" if (reasoner and reasoner.is_loaded) else "Hayir")
+    if reasoner and reasoner.is_loaded:
+        vram = reasoner.get_vram_usage_mb()
+        s3.metric("VRAM Kullanimi", f"{vram:.0f} MB")
+    else:
+        s3.metric("VRAM Kullanimi", "N/A")
+
+    st.markdown("---")
+
+    # Trigger summary
+    summary = load_vlm_summary()
+    if summary:
+        st.subheader("Trigger Istatistikleri")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Taranan Goruntu", summary.get("total_images", 0))
+        c2.metric("VLM Tetikleme", summary.get("triggered_events", 0))
+        c3.metric("VLM Islenen", summary.get("processed_by_vlm", 0))
+        c4.metric("Drop Edilen", summary.get("dropped", 0))
+
+        total = summary.get("total_images", 1)
+        triggered = summary.get("triggered_events", 0)
+        trigger_rate = triggered / max(1, total) * 100
+
+        st.metric("Tetikleme Orani", f"{trigger_rate:.1f}%")
+
+        st.markdown("---")
+        st.subheader("Kuyruk Ayarlari")
+        st.json({
+            "strategy": summary.get("queue_strategy", "fifo"),
+            "maxsize": summary.get("queue_maxsize", 32),
+            "vlm_enabled": summary.get("vlm_enabled", False),
+            "conf_threshold": summary.get("conf_threshold", 0.40),
+        })
+    else:
+        st.info("VLM trigger henuz calistirilmadi. Ozet verisi yok.")
+
+    # Event latency analysis
+    st.markdown("---")
+    st.subheader("VLM Latency Analizi")
+    events_path = REPORTS_DIR / "vlm_trigger_events.jsonl"
+    if events_path.exists():
+        import re as _re
+        latencies = []
+        for line in events_path.read_text(encoding="utf-8").strip().split("\n"):
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            resp = event.get("vlm_response", "")
+            # Parse latency from VLM response: "latency=XXXms"
+            m = _re.search(r"latency=(\d+(?:\.\d+)?)ms", resp)
+            if m:
+                latencies.append(float(m.group(1)))
+
+        if latencies:
+            col_l1, col_l2, col_l3, col_l4 = st.columns(4)
+            col_l1.metric("Avg Latency", f"{sum(latencies)/len(latencies):.0f} ms")
+            col_l2.metric("Min Latency", f"{min(latencies):.0f} ms")
+            col_l3.metric("Max Latency", f"{max(latencies):.0f} ms")
+            sorted_lat = sorted(latencies)
+            p95 = sorted_lat[int(len(sorted_lat) * 0.95)] if len(sorted_lat) > 1 else sorted_lat[0]
+            col_l4.metric("P95 Latency", f"{p95:.0f} ms")
+
+            # Histogram
+            fig, ax = plt.subplots(figsize=(8, 3), dpi=130)
+            ax.hist(latencies, bins=20, color="#42A5F5", edgecolor="white")
+            ax.set_xlabel("Latency (ms)")
+            ax.set_ylabel("Sayi")
+            ax.set_title("VLM Inference Latency Dagilimi")
+            ax.axvline(2000, color="red", linestyle="--", label="2s Budget")
+            ax.legend()
+            fig.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+        else:
+            st.info("Gercek VLM inference verisi yok (simule edilmis event'ler latency icermez).")
+    else:
+        st.info("VLM event dosyasi bulunamadi.")
+
+
 # ── Page: Operator Controls ──────────────────────────────────────────
 
 def page_operator():
@@ -858,14 +1142,45 @@ def page_operator():
 
     # Status overview
     st.subheader("Sistem Durumu")
+    reasoner = _get_vlm_reasoner()
+    vlm_loaded = reasoner is not None and reasoner.is_loaded
+
     s1, s2, s3, s4 = st.columns(4)
     s1.metric("Model", "Aktif" if MODEL_PATH.exists() else "Yuklenmedi")
     s2.metric("YOLO Durum", "Hazir")
-    s3.metric("VLM Durum", "Beklemede (Phase 2)")
+    s3.metric("VLM Durum", "Aktif" if vlm_loaded else "Yuklenmedi")
     feedback = load_feedback_stats()
     s4.metric("Geri Bildirim", f"{feedback['total']} kayit")
 
     st.markdown("---")
+
+    # VLM Load/Unload
+    if _VLM_AVAILABLE:
+        st.subheader("VLM Model Kontrolu")
+        vlm_col1, vlm_col2 = st.columns(2)
+        with vlm_col1:
+            if not vlm_loaded:
+                if st.button("VLM Yukle (PaliGemma 3B NF4)", use_container_width=True):
+                    with st.spinner("PaliGemma yukleniyor... (~30 sn)"):
+                        try:
+                            r = VLMReasoner()
+                            r.load_model()
+                            st.session_state.vlm_reasoner = r
+                            st.success(
+                                f"VLM yuklendi! VRAM: {r.get_vram_usage_mb():.0f} MB"
+                            )
+                        except Exception as e:
+                            st.error(f"VLM yukleme hatasi: {e}")
+            else:
+                st.success(f"VLM aktif | VRAM: {reasoner.get_vram_usage_mb():.0f} MB")
+        with vlm_col2:
+            if vlm_loaded:
+                if st.button("VLM Kaldir (VRAM Bosalt)", use_container_width=True):
+                    reasoner.unload_model()
+                    st.session_state.vlm_reasoner = None
+                    st.success("VLM kaldirildi, VRAM bosaltildi.")
+
+        st.markdown("---")
 
     # Control buttons
     st.subheader("Kontroller")
@@ -874,11 +1189,11 @@ def page_operator():
     with col1:
         if st.button("ACIL DURDURMA", type="primary", use_container_width=True):
             st.error("ACIL DURDURMA aktif!")
-            st.caption("Simulasyon - Gercek PLC icin Modbus/OPC-UA gerekli")
+            st.caption("Simulasyon - Gercek PLC icin MQTT/Modbus gerekli")
 
     with col2:
         if st.button("VLM Kuyrugu Temizle", use_container_width=True):
-            st.success("VLM kuyrugu temizlendi. (Sim)")
+            st.success("VLM kuyrugu temizlendi.")
 
     with col3:
         if st.button("Model Yeniden Yukle", use_container_width=True):
@@ -913,6 +1228,8 @@ PAGES = {
     "Neden CA?": page_ca,
     "MLflow Takibi": page_mlflow,
     "VLM Stratejisi": page_vlm,
+    "VLM Galeri": page_vlm_gallery,
+    "VLM Metrikler": page_vlm_metrics,
     "Edge Profiler": page_edge,
     "FP Analizi": page_fp_analysis,
     "Karar & Riskler": page_decisions,
@@ -938,7 +1255,7 @@ def main() -> None:
     st.sidebar.markdown("---")
     st.sidebar.caption(
         f"Model: `{'Aktif' if MODEL_PATH.exists() else 'Yok'}`\n\n"
-        f"Versiyon: Sprint 1 Final\n\n"
+        f"Versiyon: Sprint 2 (Phase 2)\n\n"
         f"mAP50: **0.9943**"
     )
 

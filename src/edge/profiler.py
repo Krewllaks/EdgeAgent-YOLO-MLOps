@@ -60,6 +60,10 @@ def parse_args() -> argparse.Namespace:
         default=200.0,
         help="Factory target products/sec",
     )
+    p.add_argument("--benchmark-vlm", action="store_true",
+                   help="Also benchmark VLM (PaliGemma) inference")
+    p.add_argument("--vlm-samples", type=int, default=10,
+                   help="Number of VLM inference samples")
     p.add_argument(
         "--output",
         type=Path,
@@ -130,6 +134,48 @@ def main() -> None:
     total_est_mb = est_runtime_mb + paligemma_4bit_mb
     orin_fits = total_est_mb < (ORIN_SPEC["ram_gb"] * 1024 * 0.85)  # 85% usable
 
+    # ── VLM Benchmark (optional) ──
+    vlm_report = None
+    if args.benchmark_vlm:
+        try:
+            from src.reasoning.vlm_reasoner import VLMReasoner
+            import cv2 as _cv2
+            import numpy as _np
+
+            print("[INFO] Loading VLM for benchmark...")
+            reasoner = VLMReasoner()
+            reasoner.load_model()
+
+            # Create sample crops from test images
+            vlm_latencies: list[float] = []
+            for img_path in images[:args.vlm_samples]:
+                raw = _cv2.imread(str(img_path))
+                if raw is None:
+                    continue
+                rgb = _cv2.cvtColor(raw, _cv2.COLOR_BGR2RGB)
+                h, w = rgb.shape[:2]
+                # Center crop (simulate bbox region)
+                crop = rgb[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4]
+
+                t_vlm = time.perf_counter()
+                reasoner.reason(crop)
+                vlm_latencies.append((time.perf_counter() - t_vlm) * 1000.0)
+
+            if vlm_latencies:
+                vlm_report = {
+                    "samples": len(vlm_latencies),
+                    "avg": round(sum(vlm_latencies) / len(vlm_latencies), 1),
+                    "min": round(min(vlm_latencies), 1),
+                    "max": round(max(vlm_latencies), 1),
+                    "p95": round(sorted(vlm_latencies)[int(len(vlm_latencies) * 0.95)], 1),
+                    "vram_mb": round(reasoner.get_vram_usage_mb(), 1),
+                }
+                print(f"[OK] VLM benchmark: avg={vlm_report['avg']:.1f}ms")
+
+            reasoner.unload_model()
+        except Exception as e:
+            print(f"[WARN] VLM benchmark failed: {e}")
+
     report = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "model": str(args.model),
@@ -166,6 +212,18 @@ def main() -> None:
             else f"PyTorch FP32 yeterli: {est_orin_ms:.1f}ms < {target_budget_ms:.1f}ms hedef."
         ),
     }
+
+    # Add VLM benchmark results if available
+    if vlm_report:
+        report["vlm_latency_ms"] = vlm_report
+        yolo_avg = avg_ms
+        vlm_avg = vlm_report["avg"]
+        # Total pipeline: YOLO always + VLM conditionally (~10% trigger rate)
+        report["total_pipeline_ms"] = {
+            "yolo_only": round(yolo_avg, 1),
+            "yolo_plus_vlm": round(yolo_avg + vlm_avg, 1),
+            "estimated_avg_with_10pct_trigger": round(yolo_avg + vlm_avg * 0.1, 1),
+        }
 
     # Save report
     args.output.mkdir(parents=True, exist_ok=True)

@@ -12,6 +12,18 @@ ultralytics>=8.4.0
 # Experiment tracking
 mlflow>=2.13
 
+# Phase 2: VLM reasoning (PaliGemma 3B NF4)
+transformers>=4.40
+bitsandbytes>=0.43; platform_system == "Linux"
+accelerate>=0.30
+
+# Phase 2: MLOps & Edge
+paho-mqtt>=2.0
+scikit-image>=0.22
+
+# Phase 2: VLM caption generation (offline tool)
+google-generativeai>=0.5
+
 # CUDA 12.1 PyTorch (Windows target)
 --extra-index-url https://download.pytorch.org/whl/cu121
 torch==2.5.1+cu121; platform_system == "Windows"
