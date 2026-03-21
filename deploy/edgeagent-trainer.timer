@@ -1,0 +1,16 @@
+# EdgeAgent — Continuous Training Timer
+# Her 6 saatte bir CT kontrolu calistirir.
+# Kurulum: sudo cp deploy/edgeagent-trainer.* /etc/systemd/system/
+#           sudo systemctl daemon-reload
+#           sudo systemctl enable --now edgeagent-trainer.timer
+
+[Unit]
+Description=EdgeAgent Training Check (6 saatte bir)
+
+[Timer]
+OnBootSec=1h
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

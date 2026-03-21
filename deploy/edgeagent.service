@@ -1,0 +1,48 @@
+# EdgeAgent — systemd Service Unit
+# Kurulum: sudo cp deploy/edgeagent.service /etc/systemd/system/
+#           sudo systemctl daemon-reload
+#           sudo systemctl enable --now edgeagent
+
+[Unit]
+Description=EdgeAgent Industrial Quality Control AI
+Documentation=https://github.com/Krewllaks/EdgeAgent-YOLO-MLOps
+After=network.target
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+User=edgeagent
+Group=edgeagent
+WorkingDirectory=/opt/edgeagent
+ExecStart=/opt/edgeagent/.venv/bin/python main.py --config configs/production_config.yaml
+ExecStop=/bin/kill -SIGTERM $MAINPID
+
+# Restart policy
+Restart=always
+RestartSec=5
+StartLimitInterval=300
+StartLimitBurst=5
+
+# Watchdog: 120s icerisinde sinyal gelmezse restart
+WatchdogSec=120
+
+# Environment
+Environment=CUDA_VISIBLE_DEVICES=0
+Environment=PYTHONUNBUFFERED=1
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=edgeagent
+
+# Resource limits
+MemoryMax=6G
+CPUQuota=80%
+
+# Security
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/edgeagent/data /opt/edgeagent/logs /opt/edgeagent/models
+
+[Install]
+WantedBy=multi-user.target

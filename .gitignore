@@ -91,3 +91,9 @@ htmlcov/
 *.tmp
 *.temp
 *.log
+
+# Deployment artifacts
+deploy/nssm/
+deploy/wheels/
+edgeagent-offline-bundle/
+*.pid

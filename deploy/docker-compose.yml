@@ -1,0 +1,73 @@
+# EdgeAgent — Docker Compose Production Stack
+# Kullanim:
+#   docker compose -f deploy/docker-compose.yml up -d          # Baslatma
+#   docker compose -f deploy/docker-compose.yml down            # Durdurma
+#   docker compose -f deploy/docker-compose.yml logs -f         # Loglar
+#   docker compose -f deploy/docker-compose.yml --profile training run --rm trainer  # CT
+
+services:
+  # ── Ana Inference Servisi ─────────────────────────────────
+  edgeagent:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: edgeagent
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - ../models:/app/models          # Model hot-swap (rebuild gereksiz)
+      - ../data/audit:/app/data/audit  # Audit loglari kalici
+      - ../data/feedback:/app/data/feedback
+      - ../data/shifts:/app/data/shifts
+      - ../logs:/app/logs
+      - ../configs:/app/configs        # Config degisikligi rebuild gereksiz
+    ports:
+      - "8080:8080"   # HMI web arayuzu
+      - "4840:4840"   # OPC-UA server
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      - mosquitto
+
+  # ── MQTT Broker ───────────────────────────────────────────
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: edgeagent-mqtt
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+    restart: unless-stopped
+
+  # ── Surekli Egitim (istege bagli) ────────────────────────
+  trainer:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: edgeagent-trainer
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ../models:/app/models
+      - ../data:/app/data
+      - ../logs:/app/logs
+      - ../configs:/app/configs
+    command: ["--mode", "training", "--training-action", "auto"]
+    restart: "no"
+    profiles: ["training"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

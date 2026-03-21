@@ -1,0 +1,19 @@
+# EdgeAgent — Continuous Training (oneshot)
+# Timer tarafindan tetiklenir: edgeagent-trainer.timer
+
+[Unit]
+Description=EdgeAgent Continuous Training Check
+After=edgeagent.service
+
+[Service]
+Type=oneshot
+User=edgeagent
+Group=edgeagent
+WorkingDirectory=/opt/edgeagent
+ExecStart=/opt/edgeagent/.venv/bin/python main.py --mode training --training-action auto
+Environment=CUDA_VISIBLE_DEVICES=0
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=edgeagent-trainer
+TimeoutStartSec=7200
