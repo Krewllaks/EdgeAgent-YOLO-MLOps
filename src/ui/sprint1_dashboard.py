@@ -103,19 +103,32 @@ def load_vlm_summary() -> dict | None:
 
 
 def load_feedback_stats() -> dict:
-    """Load feedback statistics from the feedback directory."""
+    """Load feedback statistics from the feedback directory.
+
+    Supports both legacy (correct/incorrect) and granular (partial + per-detection) formats.
+    """
     if not FEEDBACK_DIR.exists():
-        return {"total": 0, "correct": 0, "incorrect": 0, "files": []}
+        return {"total": 0, "correct": 0, "incorrect": 0, "partial": 0,
+                "det_correct": 0, "det_incorrect": 0, "files": []}
     feedback_file = FEEDBACK_DIR / "feedback_log.jsonl"
     if not feedback_file.exists():
-        return {"total": 0, "correct": 0, "incorrect": 0, "files": []}
+        return {"total": 0, "correct": 0, "incorrect": 0, "partial": 0,
+                "det_correct": 0, "det_incorrect": 0, "files": []}
     entries = []
     for line in feedback_file.read_text(encoding="utf-8").strip().split("\n"):
         if line.strip():
             entries.append(json.loads(line))
     correct = sum(1 for e in entries if e.get("label") == "correct")
     incorrect = sum(1 for e in entries if e.get("label") == "incorrect")
-    return {"total": len(entries), "correct": correct, "incorrect": incorrect, "files": entries}
+    partial = sum(1 for e in entries if e.get("label") == "partial")
+    # Per-detection stats from granular entries
+    det_correct = sum(e.get("correct_count", 0) for e in entries)
+    det_incorrect = sum(e.get("incorrect_count", 0) for e in entries)
+    return {
+        "total": len(entries), "correct": correct, "incorrect": incorrect,
+        "partial": partial, "det_correct": det_correct, "det_incorrect": det_incorrect,
+        "files": entries,
+    }
 
 
 def get_model():
@@ -143,6 +156,35 @@ def page_inference():
         )
         return
 
+    # ── Top bar: Upload + VLM button ──
+    top_left, top_right = st.columns([3, 1])
+    with top_left:
+        uploaded = st.file_uploader(
+            "Goruntu yukle (JPG/PNG)",
+            type=["jpg", "jpeg", "png", "bmp", "webp"],
+            accept_multiple_files=True,
+        )
+    with top_right:
+        reasoner = _get_vlm_reasoner()
+        vlm_loaded = reasoner is not None and reasoner.is_loaded
+        if _VLM_AVAILABLE:
+            if vlm_loaded:
+                st.success(f"VLM: Aktif ({reasoner.get_vram_usage_mb():.0f}MB)")
+                if st.button("VLM Kaldir", key="vlm_unload_top"):
+                    reasoner.unload_model()
+                    st.session_state.vlm_reasoner = None
+                    st.rerun()
+            else:
+                if st.button("VLM Yukle", key="vlm_load_top", type="primary"):
+                    with st.spinner("PaliGemma yukleniyor..."):
+                        try:
+                            r = VLMReasoner()
+                            r.load_model()
+                            st.session_state.vlm_reasoner = r
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"VLM hatasi: {e}")
+
     # ── Sidebar settings ──
     st.sidebar.markdown("---")
     st.sidebar.subheader("YOLO Ayarlari")
@@ -152,21 +194,21 @@ def page_inference():
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("Edge Enhancement")
-    alpha = st.sidebar.slider("Alpha (orijinal agirlik)", 0.3, 1.0, 0.7, 0.05,
-                              help="1.0 = sadece orijinal, 0.3 = guclu kenar karistirma")
-    canny_low = st.sidebar.slider("Canny Alt Esik", 10, 150, 50, 10)
-    canny_high = st.sidebar.slider("Canny Ust Esik", 50, 300, 150, 10)
-
-    # ── Upload ──
-    uploaded = st.file_uploader(
-        "Goruntu yukle (JPG/PNG)",
-        type=["jpg", "jpeg", "png", "bmp", "webp"],
-        accept_multiple_files=True,
+    auto_tune_enabled = st.sidebar.checkbox(
+        "Otomatik Parametre Bul",
+        value=False,
+        help="YOLO tespitini optimize eden Canny parametrelerini otomatik arar",
     )
+    alpha = st.sidebar.slider("Alpha (orijinal agirlik)", 0.3, 1.0, 0.7, 0.05,
+                              help="1.0 = sadece orijinal, 0.3 = guclu kenar karistirma",
+                              disabled=auto_tune_enabled)
+    canny_low = st.sidebar.slider("Canny Alt Esik", 10, 150, 50, 10,
+                                  disabled=auto_tune_enabled)
+    canny_high = st.sidebar.slider("Canny Ust Esik", 50, 300, 150, 10,
+                                   disabled=auto_tune_enabled)
 
     if not uploaded:
         st.info("Bir veya birden fazla goruntu yukleyin, model anlik tahmin yapsin.")
-        # Show sample from test set if available
         test_dir = ROOT / "data" / "processed" / "phase1_multiclass_v1" / "test" / "images"
         if test_dir.exists():
             samples = sorted(test_dir.glob("*.jpg"))[:6]
@@ -179,20 +221,20 @@ def page_inference():
                             _run_full_analysis(
                                 model, str(sample), conf_thresh, iou_thresh,
                                 img_size, alpha, canny_low, canny_high,
+                                auto_tune=auto_tune_enabled,
                             )
         return
 
     for file in uploaded:
         st.markdown(f"---\n### {file.name}")
-        # Save to temp
         tmp_path = REPORTS_DIR / f"_tmp_upload_{file.name}"
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         tmp_path.write_bytes(file.getvalue())
         _run_full_analysis(
             model, str(tmp_path), conf_thresh, iou_thresh,
             img_size, alpha, canny_low, canny_high,
+            auto_tune=auto_tune_enabled,
         )
-        # Cleanup
         if tmp_path.exists():
             tmp_path.unlink()
 
@@ -200,158 +242,220 @@ def page_inference():
 def _run_full_analysis(
     model, image_path: str, conf: float, iou: float, imgsz: int,
     alpha: float, canny_low: int, canny_high: int,
+    auto_tune: bool = False,
 ):
-    """Run YOLO + Edge Enhancement + Spatial analysis on one image."""
+    """Run YOLO + Edge Enhancement + Spatial + VLM on one image.
 
-    # ─── Section 1: YOLO Inference ───
-    st.subheader("1. YOLO Tespit")
+    Layout:
+      Row 1: [YOLO Tespit] [Edge Enhancement] [Geometrik Mekansal Kumeleme]
+      Row 2: [VLM Akil Yurume]
+    """
+
+    # ─── YOLO Inference ───
     t0 = time.perf_counter()
     results = model.predict(image_path, imgsz=imgsz, conf=conf, iou=iou, verbose=False)
     latency = (time.perf_counter() - t0) * 1000
     result = results[0]
     boxes = result.boxes
 
-    col_img, col_info = st.columns([2, 1])
+    # ─── Auto-tune edge parameters if enabled ───
+    if auto_tune:
+        try:
+            from src.data.edge_enhancer import auto_tune_fast
+            img_bgr = cv2.imread(image_path)
+            if img_bgr is not None:
+                with st.spinner("Edge parametreleri optimize ediliyor (domain kisitlamali)..."):
+                    tune_result = auto_tune_fast(img_bgr, model, imgsz, conf, iou)
+                if not tune_result.get("is_original", True) and tune_result.get("valid", True):
+                    alpha = tune_result["alpha"]
+                    canny_low = tune_result["canny_low"]
+                    canny_high = tune_result["canny_high"]
+                    st.success(
+                        f"Otomatik: alpha={alpha}, canny=({canny_low},{canny_high}) | "
+                        f"Skor: {tune_result['score']:.2f} (orijinal: {tune_result['original_score']:.2f}) | "
+                        f"Tespit: {tune_result['per_class']}"
+                    )
+                else:
+                    st.info(
+                        "Orijinal goruntu en iyi sonucu veriyor. "
+                        "Edge enhancement ekstra FP uretiyor, gerek yok."
+                    )
+        except Exception as e:
+            st.warning(f"Auto-tune hatasi: {e}")
 
-    with col_img:
+    # ─── 3-Column Layout ───
+    col_yolo, col_edge, col_spatial = st.columns(3)
+
+    # ── Column 1: YOLO Tespit ──
+    with col_yolo:
+        st.subheader("YOLO Tespit")
         annotated = result.plot()
-        annotated_rgb = annotated[:, :, ::-1]
+        annotated_rgb = annotated[:, :, ::-1].copy()
+
+        # Numaralı etiketler ekle (her bbox'a #1, #2 vs.)
+        _orig_bgr = cv2.imread(str(image_path)) if isinstance(image_path, (str, Path)) else None
+        for i in range(len(boxes)):
+            xyxy = boxes.xyxy[i].tolist()
+            cx = int((xyxy[0] + xyxy[2]) / 2)
+            cy = int(xyxy[1]) - 8
+            if cy < 20:
+                cy = int(xyxy[3]) + 20
+            cv2.putText(annotated_rgb, f"#{i+1}", (cx - 10, cy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+
         st.image(annotated_rgb, caption="Tahmin Sonucu", width="stretch")
 
-    with col_info:
-        st.metric("Latency", f"{latency:.1f} ms")
-        st.metric("Tespit Sayisi", len(boxes))
+        mc1, mc2 = st.columns(2)
+        mc1.metric("Latency", f"{latency:.1f} ms")
+        mc2.metric("Tespit", len(boxes))
 
+        img_name = Path(image_path).name
         if len(boxes) > 0:
-            st.markdown("**Tespitler:**")
+            st.markdown("**Tespitleri tek tek isaretleyin** *(yanlis olanlarin tikini kaldir)*:")
+            det_feedback = []
             for i in range(len(boxes)):
                 cls_id = int(boxes.cls[i])
                 conf_val = float(boxes.conf[i])
                 cls_name = CLASS_NAMES.get(cls_id, f"class_{cls_id}")
                 color = CLASS_COLORS.get(cls_name, "#999")
+                xyxy = boxes.xyxy[i].tolist()
 
-                conf_bar = "+" * int(conf_val * 20) + "-" * (20 - int(conf_val * 20))
-                st.markdown(
-                    f"- :{_color_name(color)}[**{cls_name}**] "
-                    f"`{conf_val:.1%}` `[{conf_bar}]`"
-                )
+                # Mini crop göster
+                crop_col, check_col = st.columns([1, 2])
+                with crop_col:
+                    if _orig_bgr is not None:
+                        x1c, y1c = max(0, int(xyxy[0]) - 10), max(0, int(xyxy[1]) - 10)
+                        x2c = min(_orig_bgr.shape[1], int(xyxy[2]) + 10)
+                        y2c = min(_orig_bgr.shape[0], int(xyxy[3]) + 10)
+                        mini = _orig_bgr[y1c:y2c, x1c:x2c, ::-1]
+                        st.image(mini, caption=f"#{i+1}", width="stretch")
 
-                if conf_val < 0.40:
-                    st.warning(f"Dusuk confidence! VLM tetiklenirdi (< 0.40)")
+                with check_col:
+                    is_correct = st.checkbox(
+                        f"**#{i+1}** :{_color_name(color)}[**{cls_name}**] `{conf_val:.1%}`",
+                        value=True,
+                        key=f"det_{img_name}_{i}",
+                    )
+                    pos_txt = f"({int(xyxy[0])},{int(xyxy[1])})-({int(xyxy[2])},{int(xyxy[3])})"
+                    st.caption(pos_txt)
+
+                det_feedback.append({
+                    "idx": i,
+                    "class_id": cls_id,
+                    "class_name": cls_name,
+                    "confidence": round(conf_val, 4),
+                    "bbox": [round(v, 1) for v in xyxy],
+                    "correct": is_correct,
+                })
+
+            st.markdown("---")
+            n_correct = sum(1 for d in det_feedback if d["correct"])
+            n_wrong = len(det_feedback) - n_correct
+            st.info(f"✅ {n_correct} dogru  |  ❌ {n_wrong} yanlis isaretlendi")
+
+            if st.button("💾 Geri Bildirimi Kaydet", key=f"save_fb_{img_name}",
+                         type="primary", width="stretch"):
+                _save_feedback_detailed(img_name, det_feedback)
+                if n_wrong == 0:
+                    st.success("Tumu dogru olarak kaydedildi")
+                else:
+                    st.warning(f"{n_wrong} yanlis tespit isaretlendi — kaydedildi")
         else:
-            st.warning("Hicbir nesne tespit edilemedi. VLM tetiklenirdi.")
+            st.warning("Tespit yok")
+            if st.button("Bos Goruntu Kaydet", key=f"save_empty_{img_name}",
+                         width="stretch"):
+                _save_feedback_detailed(img_name, [])
+                st.success("Kaydedildi")
 
-        # Feedback buttons
-        st.markdown("---")
-        st.markdown("**Geri Bildirim:**")
-        fb_col1, fb_col2 = st.columns(2)
-        img_name = Path(image_path).name
-        with fb_col1:
-            if st.button("Dogru", key=f"correct_{img_name}", use_container_width=True):
-                _save_feedback(img_name, "correct", len(boxes))
-                st.success("Kaydedildi!")
-        with fb_col2:
-            if st.button("Yanlis", key=f"wrong_{img_name}", type="primary", use_container_width=True):
-                _save_feedback(img_name, "incorrect", len(boxes))
-                st.error("Geri bildirim kaydedildi.")
+    # ── Column 2: Edge Enhancement ──
+    with col_edge:
+        st.subheader("Edge Enhancement")
+        try:
+            from src.data.edge_enhancer import preview_enhancement
 
-    # ─── Section 2: Edge Enhancement ───
-    st.markdown("---")
-    st.subheader("2. Edge Enhancement (Canny Onisleme)")
-    try:
-        from src.data.edge_enhancer import preview_enhancement
+            original_rgb, edges_rgb, blended_rgb = preview_enhancement(
+                image_path, alpha, canny_low, canny_high
+            )
 
-        original_rgb, edges_rgb, blended_rgb = preview_enhancement(
-            image_path, alpha, canny_low, canny_high
-        )
+            sub_c1, sub_c2, sub_c3 = st.columns(3)
+            with sub_c1:
+                st.image(original_rgb, caption="Orijinal", width="stretch")
+            with sub_c2:
+                st.image(edges_rgb, caption="Canny", width="stretch")
+            with sub_c3:
+                st.image(blended_rgb, caption="Harmanlanmis", width="stretch")
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.image(original_rgb, caption="Orijinal", width="stretch")
-        with col2:
-            st.image(edges_rgb, caption="Canny Kenarlar", width="stretch")
-        with col3:
-            st.image(blended_rgb, caption=f"Harmanlanmis (a={alpha})", width="stretch")
+            st.markdown("**YOLO Karsilastirmasi:**")
+            comp1, comp2 = st.columns(2)
+            with comp1:
+                st.caption("Orijinal ile tespit")
+                ann1 = result.plot()[:, :, ::-1]
+                st.image(ann1, width="stretch")
+                st.caption(f"Tespit: {len(result.boxes)}")
 
-        # YOLO comparison
-        st.markdown("**YOLO Karsilastirmasi:**")
-        col_orig, col_enhanced = st.columns(2)
+            with comp2:
+                st.caption("Enhanced ile tespit")
+                enhanced_path = REPORTS_DIR / f"_tmp_edge_{Path(image_path).name}"
+                enhanced_bgr = cv2.cvtColor(blended_rgb, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(str(enhanced_path), enhanced_bgr)
+                r2 = model.predict(str(enhanced_path), imgsz=imgsz, conf=conf, iou=iou, verbose=False)
+                ann2 = r2[0].plot()[:, :, ::-1]
+                st.image(ann2, width="stretch")
+                st.caption(f"Tespit: {len(r2[0].boxes)}")
+                if enhanced_path.exists():
+                    enhanced_path.unlink()
 
-        with col_orig:
-            st.markdown("*Orijinal ile Tespit*")
-            ann1 = result.plot()[:, :, ::-1]
-            st.image(ann1, width="stretch")
-            st.caption(f"Tespit: {len(result.boxes)}")
+            with st.expander("Parametre Detaylari"):
+                st.markdown(f"**Alpha:** {alpha}")
+                st.markdown(f"**Canny Alt Esik:** {canny_low}")
+                st.markdown(f"**Canny Ust Esik:** {canny_high}")
 
-        with col_enhanced:
-            st.markdown("*Enhanced ile Tespit*")
-            enhanced_path = REPORTS_DIR / f"_tmp_edge_enhanced_{Path(image_path).name}"
-            enhanced_bgr = cv2.cvtColor(blended_rgb, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(str(enhanced_path), enhanced_bgr)
-            r2 = model.predict(str(enhanced_path), imgsz=imgsz, conf=conf, iou=iou, verbose=False)
-            ann2 = r2[0].plot()[:, :, ::-1]
-            st.image(ann2, width="stretch")
-            st.caption(f"Tespit: {len(r2[0].boxes)}")
-            if enhanced_path.exists():
-                enhanced_path.unlink()
+        except Exception as e:
+            st.warning(f"Edge Enhancement yuklenemedi: {e}")
 
-    except Exception as e:
-        st.warning(f"Edge Enhancement yuklenemedi: {e}")
+    # ── Column 3: Spatial Clustering ──
+    spatial_result = None
+    with col_spatial:
+        st.subheader("Mekansal Kumeleme")
+        try:
+            from src.reasoning.spatial_logic import (
+                SpatialAnalyzer, detections_from_yolo_result,
+            )
 
-    # ─── Section 3: Spatial Clustering ───
-    st.markdown("---")
-    st.subheader("3. Geometrik Mekansal Kumeleme")
-    try:
-        from src.reasoning.spatial_logic import (
-            SpatialAnalyzer, detections_from_yolo_result,
-        )
+            detections = detections_from_yolo_result(result)
+            analyzer = SpatialAnalyzer(n_clusters=4)
+            spatial_result = analyzer.analyze_frame(detections, img_shape=result.orig_shape)
 
-        detections = detections_from_yolo_result(result)
-        analyzer = SpatialAnalyzer(n_clusters=4)
-        spatial_result = analyzer.analyze_frame(detections, img_shape=result.orig_shape)
-
-        col_simg, col_sresult = st.columns([2, 1])
-
-        with col_simg:
             _draw_spatial_overlay(result, spatial_result)
 
-        with col_sresult:
             verdict_colors = {"OK": "green", "missing_screw": "orange", "missing_component": "red"}
             verdict_color = verdict_colors.get(spatial_result.verdict, "gray")
             st.markdown(f"### :{verdict_color}[{spatial_result.verdict.upper()}]")
-            st.metric("Tespit Sayisi", spatial_result.detection_count)
+            st.metric("Tespit", spatial_result.detection_count)
             st.metric("Ort. Confidence", f"{spatial_result.confidence:.1%}")
-
-            st.markdown("---")
             st.markdown(f"**Neden:** {spatial_result.reason}")
-            st.markdown(f"**Sol Taraf:** `{spatial_result.left_status}`")
-            st.markdown(f"**Sag Taraf:** `{spatial_result.right_status}`")
+            st.markdown(f"**Sol:** `{spatial_result.left_status}` | **Sag:** `{spatial_result.right_status}`")
 
             if spatial_result.clusters:
-                st.markdown("---")
-                for cluster in spatial_result.clusters:
-                    st.markdown(
-                        f"- Kume {cluster.cluster_id} ({cluster.side}): "
-                        f"**{cluster.dominant_class}** "
-                        f"({len(cluster.detections)} tespit)"
-                    )
+                with st.expander("Kume Detaylari"):
+                    for cluster in spatial_result.clusters:
+                        st.markdown(
+                            f"- K{cluster.cluster_id} ({cluster.side}): "
+                            f"**{cluster.dominant_class}** "
+                            f"({len(cluster.detections)} tespit)"
+                        )
 
-    except Exception as e:
-        st.warning(f"Mekansal analiz yuklenemedi: {e}")
+        except Exception as e:
+            st.warning(f"Mekansal analiz yuklenemedi: {e}")
 
-    # ─── Section 4: VLM Reasoning (Phase 2) ───
+    # ─── Row 2: VLM Reasoning ───
     st.markdown("---")
-    st.subheader("4. VLM Akil Yurume (PaliGemma)")
+    st.subheader("VLM Akil Yurume (PaliGemma)")
 
     reasoner = _get_vlm_reasoner()
     if not _VLM_AVAILABLE:
         st.info("VLM modulleri yuklenemedi. `pip install transformers` gerekli.")
     elif reasoner is None or not reasoner.is_loaded:
-        st.info(
-            "VLM modeli yuklenmedi. **Operator Kontrol** sayfasindan "
-            "'VLM Yukle' butonuna basin."
-        )
-        # Still show trigger status
         try:
             trigger_config = TriggerConfig(conf_threshold=0.40)
             should_fire, low_dets, reason = should_trigger_vlm(
@@ -360,12 +464,13 @@ def _run_full_analysis(
             if should_fire:
                 st.warning(
                     f"VLM tetiklenirdi! Neden: `{reason}` | "
-                    f"{len(low_dets)} dusuk guvenli tespit"
+                    f"{len(low_dets)} dusuk guvenli tespit | "
+                    "Sayfanin ustundeki 'VLM Yukle' butonuna basin."
                 )
             else:
                 st.success("VLM tetiklenmezdi - tum tespitler yuksek guvenli.")
         except Exception:
-            pass
+            st.info("VLM modeli yuklenmedi. Sayfanin ustundeki 'VLM Yukle' butonuna basin.")
     else:
         try:
             trigger_config = TriggerConfig(conf_threshold=0.40)
@@ -376,7 +481,6 @@ def _run_full_analysis(
             if should_fire:
                 st.warning(f"VLM tetiklendi! Neden: `{reason}`")
 
-                # Crop and reason
                 img_rgb = cv2.imread(image_path)
                 if img_rgb is not None:
                     img_rgb = cv2.cvtColor(img_rgb, cv2.COLOR_BGR2RGB)
@@ -390,22 +494,15 @@ def _run_full_analysis(
 
                     vlm_result = reasoner.reason(crop)
 
-                    col_vlm_img, col_vlm_info = st.columns([1, 2])
+                    col_vlm_img, col_vlm_info, col_vlm_verdict = st.columns([1, 1, 1])
                     with col_vlm_img:
                         st.image(crop, caption="VLM Analiz Bolgesi", width="stretch")
 
                     with col_vlm_info:
-                        # Show VLM result
                         if vlm_result.defect_type:
-                            dt_colors = {
-                                "ok": "green",
-                                "missing_screw": "orange",
-                                "missing_component": "red",
-                            }
+                            dt_colors = {"ok": "green", "missing_screw": "orange", "missing_component": "red"}
                             dt_color = dt_colors.get(vlm_result.defect_type, "gray")
-                            st.markdown(
-                                f"**VLM Karari:** :{dt_color}[**{vlm_result.defect_type}**]"
-                            )
+                            st.markdown(f"**VLM Karari:** :{dt_color}[**{vlm_result.defect_type}**]")
                         else:
                             st.markdown("**VLM Karari:** :gray[Belirsiz]")
 
@@ -413,38 +510,34 @@ def _run_full_analysis(
                         st.metric("VLM Latency", f"{vlm_result.latency_ms:.0f} ms")
                         st.markdown(f"**Aciklama:** {vlm_result.reasoning}")
 
-                    # Conflict resolution
-                    if _VLM_AVAILABLE:
-                        resolver = ConflictResolver()
-                        yolo_dets = []
-                        for i in range(len(boxes)):
-                            yolo_dets.append({
-                                "class_name": CLASS_NAMES.get(int(boxes.cls[i]), "?"),
-                                "confidence": float(boxes.conf[i]),
-                            })
+                    with col_vlm_verdict:
+                        if _VLM_AVAILABLE:
+                            resolver = ConflictResolver()
+                            yolo_dets = []
+                            for i in range(len(boxes)):
+                                yolo_dets.append({
+                                    "class_name": CLASS_NAMES.get(int(boxes.cls[i]), "?"),
+                                    "confidence": float(boxes.conf[i]),
+                                })
 
-                        try:
-                            spatial_v = spatial_result.verdict
-                            spatial_s = spatial_result.left_status
-                        except NameError:
-                            spatial_v = None
-                            spatial_s = None
+                            spatial_v = spatial_result.verdict if spatial_result else None
+                            spatial_s = spatial_result.left_status if spatial_result else None
 
-                        final = resolver.resolve(
-                            yolo_dets, spatial_v, spatial_s, vlm_result
-                        )
+                            final = resolver.resolve(
+                                yolo_dets, spatial_v, spatial_s, vlm_result
+                            )
 
-                        st.markdown("---")
-                        st.markdown("**Nihai Karar (Conflict Resolver):**")
-                        fc = {"ok": "green", "missing_screw": "orange", "missing_component": "red"}
-                        st.markdown(
-                            f"### :{fc.get(final.verdict, 'gray')}[{final.verdict.upper()}]"
-                        )
-                        st.markdown(f"**Kaynak:** `{final.source}` | **Conflict:** `{final.conflict_detected}`")
-                        st.markdown(f"**Reasoning:** {final.reasoning}")
+                            st.markdown("**Nihai Karar:**")
+                            fc = {"ok": "green", "missing_screw": "orange", "missing_component": "red"}
+                            st.markdown(
+                                f"### :{fc.get(final.verdict, 'gray')}[{final.verdict.upper()}]"
+                            )
+                            st.markdown(f"**Kaynak:** `{final.source}`")
+                            st.markdown(f"**Conflict:** `{final.conflict_detected}`")
+                            st.markdown(f"**Reasoning:** {final.reasoning}")
 
-                        with st.expander("RCA (Kok Neden Analizi)"):
-                            st.markdown(final.rca_text)
+                            with st.expander("RCA (Kok Neden Analizi)"):
+                                st.markdown(final.rca_text)
             else:
                 st.success("VLM tetiklenmedi - tum tespitler yuksek guvenli.")
         except Exception as e:
@@ -458,7 +551,7 @@ def _color_name(hex_color: str) -> str:
 
 
 def _save_feedback(image_name: str, label: str, det_count: int):
-    """Save operator feedback for Active Learning pipeline."""
+    """Save operator feedback for Active Learning pipeline (legacy)."""
     FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
     feedback_file = FEEDBACK_DIR / "feedback_log.jsonl"
     entry = {
@@ -466,6 +559,44 @@ def _save_feedback(image_name: str, label: str, det_count: int):
         "image": image_name,
         "label": label,
         "detection_count": det_count,
+    }
+    with feedback_file.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def _save_feedback_detailed(image_name: str, detections: list[dict]):
+    """Save per-detection operator feedback for granular Active Learning.
+
+    Each detection has: idx, class_id, class_name, confidence, bbox, correct (bool).
+    Label is auto-determined:
+        - 'correct'   : all detections marked correct
+        - 'incorrect' : all detections marked incorrect
+        - 'partial'   : some correct, some incorrect
+    """
+    FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
+    feedback_file = FEEDBACK_DIR / "feedback_log.jsonl"
+
+    n_total = len(detections)
+    n_correct = sum(1 for d in detections if d.get("correct", True))
+    n_incorrect = n_total - n_correct
+
+    if n_total == 0:
+        label = "correct"  # no detections = user confirms empty is fine
+    elif n_incorrect == 0:
+        label = "correct"
+    elif n_correct == 0:
+        label = "incorrect"
+    else:
+        label = "partial"
+
+    entry = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "image": image_name,
+        "label": label,
+        "detection_count": n_total,
+        "correct_count": n_correct,
+        "incorrect_count": n_incorrect,
+        "detections": detections,
     }
     with feedback_file.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -505,79 +636,121 @@ def _draw_spatial_overlay(yolo_result, spatial_result):
 
 # ── Page: Data & Balance ─────────────────────────────────────────────
 
+def _load_dataset_versions() -> list[dict]:
+    """Load summary.json from all dataset versions (V1-V4), normalized."""
+    processed = ROOT / "data" / "processed"
+    versions = []
+    for d in sorted(processed.iterdir()):
+        summary_path = d / "summary.json"
+        if not summary_path.exists():
+            continue
+        data = json.loads(summary_path.read_text(encoding="utf-8"))
+        # Normalize different summary formats
+        if "splits" in data:
+            splits = data["splits"]
+        elif "split_sizes" in data:
+            splits = data["split_sizes"]
+        else:
+            continue
+        if "final_class_distribution" in data:
+            classes = data["final_class_distribution"]
+        elif "class_counts" in data:
+            classes = data["class_counts"]
+        else:
+            classes = {}
+        # Determine version name
+        name = data.get("version", d.name.replace("phase1_", "").replace("multiclass_", ""))
+        versions.append({
+            "name": name.upper(),
+            "dir": d.name,
+            "train": splits.get("train", 0),
+            "val": splits.get("val", 0),
+            "test": splits.get("test", 0),
+            "screw": classes.get("screw", 0),
+            "missing_screw": classes.get("missing_screw", 0),
+            "missing_component": classes.get("missing_component", 0),
+        })
+    return versions
+
+
 def page_data():
     st.header("Veri Dengeleme & Sinif Dagilimi")
 
-    data = load_latest_report()
-    if not data:
-        st.error(
-            "Rapor bulunamadi. Once su komutu calistir:\n"
-            "`python src/data/augment_analysis.py`"
-        )
+    versions = _load_dataset_versions()
+    if not versions:
+        st.error("Hic dataset bulunamadi (data/processed/phase1_*/summary.json)")
         return
 
-    before = data.get("before_train_distribution", {})
-    after = data.get("after_train_distribution", {})
+    # Show last 3 versions by default
+    show_count = st.selectbox("Kac versiyon goster?", [3, 4, len(versions)],
+                              format_func=lambda x: f"Son {x}" if x <= 4 else "Tumu")
+    display = versions[-show_count:]
 
-    # KPI row
+    # KPI: latest vs previous
+    latest = display[-1]
+    prev = display[-2] if len(display) >= 2 else None
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric(
-        "Train Images",
-        after.get("total_images", 0),
-        delta=f"+{after.get('total_images', 0) - before.get('total_images', 0)}",
-    )
-    c2.metric("screw", get_count(after.get("instance_counts", {}), 0),
-              delta=f"+{get_count(after.get('instance_counts', {}), 0) - get_count(before.get('instance_counts', {}), 0)}")
-    c3.metric("missing_screw", get_count(after.get("instance_counts", {}), 1),
-              delta=f"+{get_count(after.get('instance_counts', {}), 1) - get_count(before.get('instance_counts', {}), 1)}")
-    c4.metric("missing_component", get_count(after.get("instance_counts", {}), 2),
-              delta=f"+{get_count(after.get('instance_counts', {}), 2) - get_count(before.get('instance_counts', {}), 2)}")
+    c1.metric(f"Train ({latest['name']})", latest["train"],
+              delta=f"+{latest['train'] - prev['train']}" if prev else None)
+    c2.metric("screw", latest["screw"],
+              delta=f"+{latest['screw'] - prev['screw']}" if prev else None)
+    c3.metric("missing_screw", latest["missing_screw"],
+              delta=f"+{latest['missing_screw'] - prev['missing_screw']}" if prev else None)
+    c4.metric("missing_component", latest["missing_component"],
+              delta=f"+{latest['missing_component'] - prev['missing_component']}" if prev else None)
 
     st.markdown("---")
 
-    # Chart
+    # Multi-version comparison chart
     col_chart, col_detail = st.columns([2, 1])
     with col_chart:
-        _render_distribution_plot(before, after)
+        _render_version_comparison(display)
     with col_detail:
-        st.markdown("**Iyilesme Carpanlari**")
-        for cid, name in CLASS_NAMES.items():
-            b = get_count(before.get("instance_counts", {}), cid)
-            a = get_count(after.get("instance_counts", {}), cid)
-            ratio = a / max(1, b)
-            st.markdown(f"- **{name}**: x{ratio:.2f} ({b} -> {a})")
-        st.markdown(f"\n**Background**: {after.get('background_images', 0)} gorsel")
+        st.markdown("**Versiyon Detaylari**")
+        for v in display:
+            total_bbox = v["screw"] + v["missing_screw"] + v["missing_component"]
+            ms_pct = v["missing_screw"] / max(1, total_bbox) * 100
+            mc_pct = v["missing_component"] / max(1, total_bbox) * 100
+            st.markdown(
+                f"**{v['name']}**: {v['train']} img, {total_bbox} bbox\n"
+                f"- ms: {v['missing_screw']} (%{ms_pct:.0f}), "
+                f"mc: {v['missing_component']} (%{mc_pct:.0f})"
+            )
 
     if LATEST_PNG.exists():
         with st.expander("Augmentation Analizi (Detay Grafik)"):
             st.image(str(LATEST_PNG), width="stretch")
 
 
-def _render_distribution_plot(before: dict, after: dict):
-    labels = list(CLASS_NAMES.values())
-    class_ids = list(CLASS_NAMES.keys())
-    before_values = [get_count(before.get("instance_counts", {}), cid) for cid in class_ids]
-    after_values = [get_count(after.get("instance_counts", {}), cid) for cid in class_ids]
-
+def _render_version_comparison(versions: list[dict]):
+    """Render bar chart comparing class distributions across dataset versions."""
+    labels = [v["name"] for v in versions]
     x = np.arange(len(labels))
-    width = 0.38
-    fig, ax = plt.subplots(figsize=(7, 3.5), dpi=130)
-    bars1 = ax.bar(x - width / 2, before_values, width, label="Oncesi", color="#90CAF9")
-    bars2 = ax.bar(x + width / 2, after_values, width, label="Sonrasi", color="#1565C0")
+    width = 0.25
+    fig, ax = plt.subplots(figsize=(8, 4), dpi=130)
 
-    ax.set_xticks(x, labels, fontsize=9)
+    screw_vals = [v["screw"] for v in versions]
+    ms_vals = [v["missing_screw"] for v in versions]
+    mc_vals = [v["missing_component"] for v in versions]
+
+    bars1 = ax.bar(x - width, screw_vals, width, label="screw", color="#4CAF50")
+    bars2 = ax.bar(x, ms_vals, width, label="missing_screw", color="#FF9800")
+    bars3 = ax.bar(x + width, mc_vals, width, label="missing_component", color="#F44336")
+
+    ax.set_xticks(x, labels, fontsize=10)
     ax.set_ylabel("BBox Sayisi")
+    ax.set_title("Dataset Versiyonlari - Sinif Dagilimi Karsilastirmasi")
     ax.legend(fontsize=9)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    # Value labels
-    for bar in bars1:
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 20,
-                str(int(bar.get_height())), ha="center", fontsize=7, color="#555")
-    for bar in bars2:
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 20,
-                str(int(bar.get_height())), ha="center", fontsize=7, color="#555")
+    for bars in [bars1, bars2, bars3]:
+        for bar in bars:
+            h = bar.get_height()
+            if h > 0:
+                ax.text(bar.get_x() + bar.get_width() / 2, h + 20,
+                        str(int(h)), ha="center", fontsize=7, color="#555")
 
     fig.tight_layout()
     st.pyplot(fig)
@@ -665,54 +838,205 @@ Avantaj: Her piksel hem yatay hem dikey baglamdan haberdar.
 
 # ── Page: MLflow ─────────────────────────────────────────────────────
 
-def page_mlflow():
-    st.header("MLflow Experiment Tracking")
+def _load_mlflow_runs() -> list[dict]:
+    """MLflow veritabanindan tum run'lari yukle."""
+    try:
+        import mlflow
+        db_path = ROOT / "mlflow.db"
+        if not db_path.exists():
+            return []
+        mlflow.set_tracking_uri(f"sqlite:///{db_path}")
+        client = mlflow.tracking.MlflowClient()
+        experiments = client.search_experiments()
+        all_runs = []
+        for exp in experiments:
+            runs = client.search_runs(experiment_ids=[exp.experiment_id],
+                                      order_by=["start_time DESC"])
+            for r in runs:
+                all_runs.append({
+                    "run_id": r.info.run_id,
+                    "name": r.info.run_name or r.info.run_id[:8],
+                    "status": r.info.status,
+                    "params": r.data.params,
+                    "metrics": r.data.metrics,
+                    "tags": r.data.tags,
+                })
+        return all_runs
+    except Exception as e:
+        st.warning(f"MLflow yuklenemedi: {e}")
+        return []
 
-    # Sprint 1 metrics - prominent
+
+def _get_metric(metrics: dict, base_name: str) -> float:
+    """Get metric value trying multiple key formats (ultralytics vs backfill)."""
+    candidates = [
+        f"final_metrics_{base_name}",   # backfill format
+        f"metrics_{base_name}",          # backfill v2
+        f"metrics/{base_name}",          # ultralytics auto-log
+        f"final_{base_name}",            # custom log
+        base_name,                       # raw
+    ]
+    for key in candidates:
+        if key in metrics and metrics[key] != 0:
+            return metrics[key]
+    # Return 0 only if truly not found
+    for key in candidates:
+        if key in metrics:
+            return metrics[key]
+    return 0.0
+
+
+def page_mlflow():
+    st.header("MLflow - Model Egitim Takibi")
+    st.caption(
+        "Her egitim run'inin performansini karsilastirir. "
+        "mAP50 = ortalama tespit dogrulugu, Precision = yanlis alarm orani, "
+        "Recall = kacirma orani."
+    )
+
+    runs = _load_mlflow_runs()
+
+    if not runs:
+        st.warning("Kayitli MLflow run bulunamadi.")
+        st.code("python scripts/backfill_mlflow.py", language="bash")
+        return
+
+    # ── Ozet metrikler ──
+    st.subheader(f"Toplam {len(runs)} Egitim Run'i")
+
+    # En iyi ve baseline run'lari bul
+    best_run = None
+    best_map50 = 0.0
+    baseline_map50 = 0.0
+    for r in runs:
+        m = _get_metric(r["metrics"], "mAP50B")
+        if m > best_map50:
+            best_map50 = m
+            best_run = r
+        if r["tags"].get("version") == "baseline" or "baseline" in r["name"].lower():
+            baseline_map50 = m
+
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Baseline mAP50", "0.4942")
-    m2.metric("Final mAP50", "0.9943", delta="+0.5001")
-    m3.metric("Best Epoch", "96 / 100")
-    m4.metric("Iyilesme", "+101%")
+    m1.metric("Baseline mAP50", f"{baseline_map50:.4f}" if baseline_map50 else "N/A")
+    m2.metric("En Iyi mAP50", f"{best_map50:.4f}" if best_map50 else "N/A",
+              delta=f"+{best_map50 - baseline_map50:.4f}" if baseline_map50 and best_map50 else None)
+    if best_run:
+        m3.metric("En Iyi Run", best_run["name"][:25])
+    else:
+        m3.metric("En Iyi Run", "N/A")
+    m4.metric("Toplam Run", len(runs))
 
     st.markdown("---")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Neden MLflow?")
+    # ── Run karsilastirma tablosu ──
+    st.subheader("Run Karsilastirma")
+    table_rows = []
+    for r in runs:
+        metrics = r["metrics"]
+        map50 = _get_metric(metrics, "mAP50B")
+        map50_95 = _get_metric(metrics, "mAP50-95B")
+        prec = _get_metric(metrics, "precisionB")
+        rec = _get_metric(metrics, "recallB")
+        table_rows.append({
+            "Run": r["name"],
+            "mAP50": f"{map50:.4f}",
+            "mAP50-95": f"{map50_95:.4f}",
+            "Precision": f"{prec:.4f}",
+            "Recall": f"{rec:.4f}",
+            "Epochs": r["params"].get("epochs", "?"),
+            "Batch": r["params"].get("batch", "?"),
+            "LR": r["params"].get("lr0", "?"),
+        })
+    st.dataframe(table_rows, hide_index=True, use_container_width=True)
+
+    # Metric explanations
+    with st.expander("Metrikler ne anlama geliyor?"):
         st.markdown("""
-- Her egitimin hyperparameter + metrik kaydini tutar
-- Model versiyonlama ve artifact yonetimi
-- Takim ici deneykarsilastirmasi
-- Otomatik regression detection (mAP duserse alarm)
+- **mAP50**: Ortalama tespit dogrulugu (%50 IoU esiginde). 1.0 = mukemmel.
+- **mAP50-95**: Daha siki degerlendirme (IoU %50-%95 arasi). Genelde daha dusuk cikar.
+- **Precision**: Modelin "hata var" dedigi seylerin kaci gercekten hata? (Yuksek = az yanlis alarm)
+- **Recall**: Gercek hatalarin kacini yakaladi? (Yuksek = az kacirma). Uretimde Recall kritik!
+- **Epochs**: Kac tur egitim yapildi.
 """)
-        st.subheader("Kayit Edilen Metrikler")
-        metrics_data = {
-            "Metrik": ["mAP50(B)", "mAP50-95(B)", "precision(B)", "recall(B)",
-                       "train/box_loss", "train/cls_loss", "val/box_loss", "val/cls_loss"],
-            "Aciklama": ["Ana basari metrigi", "Siki IoU metrigi", "Kesinlik",
-                         "Duyarlilik", "Kutu kaybi", "Sinif kaybi",
-                         "Val kutu kaybi", "Val sinif kaybi"],
-        }
-        st.dataframe(metrics_data, hide_index=True)
 
-    with col2:
-        st.subheader("Hizli Baslangic")
-        st.code("""
-# MLflow UI baslatma
-mlflow ui --port 5000
+    st.markdown("---")
 
-# Tarayicida ac
-# http://localhost:5000
-""".strip(), language="bash")
+    # ── Epoch-by-epoch grafik ──
+    col_chart1, col_chart2 = st.columns(2)
 
-        st.subheader("Sprint 1 Egitim Parametreleri")
-        params = {
-            "Parametre": ["epochs", "batch", "imgsz", "patience", "close_mosaic",
-                          "amp", "seed", "optimizer"],
-            "Deger": ["100", "8", "640", "25", "10", "True", "42", "auto"],
-        }
-        st.dataframe(params, hide_index=True)
+    with col_chart1:
+        st.subheader("mAP50 Egitim Egrisi")
+        try:
+            import mlflow
+            client = mlflow.tracking.MlflowClient()
+            import pandas as pd
+            chart_data = {}
+            for r in runs:
+                # Try multiple metric key formats
+                for mkey in ["metrics/mAP50B", "metrics_mAP50B"]:
+                    history = client.get_metric_history(r["run_id"], mkey)
+                    if history:
+                        chart_data[r["name"]] = {h.step: h.value for h in history}
+                        break
+            if chart_data:
+                max_steps = max(max(d.keys()) for d in chart_data.values() if d)
+                df = pd.DataFrame(index=range(max_steps + 1))
+                for name, vals in chart_data.items():
+                    df[name] = pd.Series(vals)
+                df.index.name = "Epoch"
+                st.line_chart(df)
+            else:
+                st.info("Epoch verisi bulunamadi")
+        except Exception as e:
+            st.warning(f"Grafik olusturulamadi: {e}")
+
+    with col_chart2:
+        st.subheader("Loss Egrisi (Val)")
+        try:
+            import mlflow
+            client = mlflow.tracking.MlflowClient()
+            import pandas as pd
+            chart_data = {}
+            for r in runs:
+                for lkey in ["val/box_loss", "val_box_loss"]:
+                    history = client.get_metric_history(r["run_id"], lkey)
+                    if history:
+                        chart_data[r["name"]] = {h.step: h.value for h in history}
+                        break
+            if chart_data:
+                max_steps = max(max(d.keys()) for d in chart_data.values() if d)
+                df = pd.DataFrame(index=range(max_steps + 1))
+                for name, vals in chart_data.items():
+                    df[name] = pd.Series(vals)
+                df.index.name = "Epoch"
+                st.line_chart(df)
+            else:
+                st.info("Loss verisi bulunamadi")
+        except Exception as e:
+            st.warning(f"Grafik olusturulamadi: {e}")
+
+    st.markdown("---")
+
+    # ── Detayli run bilgisi ──
+    st.subheader("Run Detaylari")
+    run_names = [r["name"] for r in runs]
+    selected = st.selectbox("Run sec", run_names)
+    sel_run = next((r for r in runs if r["name"] == selected), None)
+
+    if sel_run:
+        p_col, m_col = st.columns(2)
+        with p_col:
+            st.markdown("**Hyperparametreler**")
+            st.json(sel_run["params"])
+        with m_col:
+            st.markdown("**Metrikler**")
+            st.json({k: round(v, 6) if isinstance(v, float) else v
+                     for k, v in sel_run["metrics"].items()})
+
+    st.markdown("---")
+    st.subheader("MLflow UI")
+    st.code("python scripts/start_mlflow_server.py", language="bash")
+    st.markdown("[http://localhost:5000](http://localhost:5000) adresinde detayli UI")
 
 
 # ── Page: VLM Strategy ───────────────────────────────────────────────
@@ -895,14 +1219,25 @@ def page_fp_analysis():
     # Show feedback stats
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Toplam Geri Bildirim", feedback["total"])
-    c2.metric("Dogru Tespit", feedback["correct"])
-    c3.metric("Yanlis Tespit", feedback["incorrect"])
-    accuracy = feedback["correct"] / max(1, feedback["total"])
-    c4.metric("Operator Dogruluk", f"{accuracy:.0%}")
+    c2.metric("Tumu Dogru", feedback["correct"])
+    c3.metric("Tumu Yanlis", feedback["incorrect"])
+    c4.metric("Kismi Duzeltme", feedback.get("partial", 0))
 
-    if feedback["incorrect"] > 0:
+    # Per-detection level stats
+    det_c = feedback.get("det_correct", 0)
+    det_i = feedback.get("det_incorrect", 0)
+    det_total = det_c + det_i
+    if det_total > 0:
+        d1, d2, d3 = st.columns(3)
+        d1.metric("Tekil Tespit (Dogru)", det_c)
+        d2.metric("Tekil Tespit (Yanlis)", det_i)
+        d3.metric("Tespit Dogruluk", f"{det_c / det_total:.0%}")
+
+    needs_correction = feedback["incorrect"] + feedback.get("partial", 0)
+    if needs_correction > 0:
         st.warning(
-            f"{feedback['incorrect']} yanlis tespit isaretlendi. "
+            f"{needs_correction} goruntude duzeltme isaretlendi "
+            f"({det_i} tekil yanlis tespit). "
             "Bu veriler Active Learning dongusu icin kullanilacak."
         )
 
@@ -910,7 +1245,18 @@ def page_fp_analysis():
     st.markdown("---")
     st.subheader("Son Geri Bildirimler")
     recent = feedback["files"][-20:][::-1]
-    st.dataframe(recent, hide_index=True)
+    # Show summary columns, not full detection details
+    display_entries = []
+    for e in recent:
+        display_entries.append({
+            "Zaman": e.get("timestamp", ""),
+            "Goruntu": e.get("image", ""),
+            "Durum": e.get("label", ""),
+            "Tespit": e.get("detection_count", 0),
+            "Dogru": e.get("correct_count", e.get("detection_count", 0) if e.get("label") == "correct" else 0),
+            "Yanlis": e.get("incorrect_count", 0),
+        })
+    st.dataframe(display_entries, hide_index=True)
 
 
 # ── Page: Decisions ──────────────────────────────────────────────────
@@ -1160,7 +1506,7 @@ def page_operator():
         vlm_col1, vlm_col2 = st.columns(2)
         with vlm_col1:
             if not vlm_loaded:
-                if st.button("VLM Yukle (PaliGemma 3B NF4)", use_container_width=True):
+                if st.button("VLM Yukle (PaliGemma 3B NF4)", width="stretch"):
                     with st.spinner("PaliGemma yukleniyor... (~30 sn)"):
                         try:
                             r = VLMReasoner()
@@ -1175,7 +1521,7 @@ def page_operator():
                 st.success(f"VLM aktif | VRAM: {reasoner.get_vram_usage_mb():.0f} MB")
         with vlm_col2:
             if vlm_loaded:
-                if st.button("VLM Kaldir (VRAM Bosalt)", use_container_width=True):
+                if st.button("VLM Kaldir (VRAM Bosalt)", width="stretch"):
                     reasoner.unload_model()
                     st.session_state.vlm_reasoner = None
                     st.success("VLM kaldirildi, VRAM bosaltildi.")
@@ -1187,22 +1533,22 @@ def page_operator():
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        if st.button("ACIL DURDURMA", type="primary", use_container_width=True):
+        if st.button("ACIL DURDURMA", type="primary", width="stretch"):
             st.error("ACIL DURDURMA aktif!")
             st.caption("Simulasyon - Gercek PLC icin MQTT/Modbus gerekli")
 
     with col2:
-        if st.button("VLM Kuyrugu Temizle", use_container_width=True):
+        if st.button("VLM Kuyrugu Temizle", width="stretch"):
             st.success("VLM kuyrugu temizlendi.")
 
     with col3:
-        if st.button("Model Yeniden Yukle", use_container_width=True):
+        if st.button("Model Yeniden Yukle", width="stretch"):
             if "yolo_model" in st.session_state:
                 del st.session_state.yolo_model
             st.success("Model cache temizlendi. Sonraki inference'da yeniden yuklenir.")
 
     with col4:
-        if st.button("Geri Bildirim Sifirla", use_container_width=True):
+        if st.button("Geri Bildirim Sifirla", width="stretch"):
             feedback_file = FEEDBACK_DIR / "feedback_log.jsonl"
             if feedback_file.exists():
                 feedback_file.unlink()
@@ -1222,18 +1568,267 @@ def page_operator():
 
 # ── Main ─────────────────────────────────────────────────────────────
 
+def page_vlm_hub():
+    """Combined VLM page: Strategy + Gallery + Metrics in tabs."""
+    st.header("VLM Merkezi")
+
+    tab_strategy, tab_gallery, tab_metrics = st.tabs(
+        ["Strateji", "Anomali Galerisi", "Performans Metrikleri"]
+    )
+
+    with tab_strategy:
+        page_vlm()
+
+    with tab_gallery:
+        page_vlm_gallery()
+
+    with tab_metrics:
+        page_vlm_metrics()
+
+
+def page_accuracy():
+    """Page 10: Per-class accuracy metrics."""
+    st.header("Sinif Bazli Basari Metrikleri")
+    st.caption(
+        "Her sinifin (screw, missing_screw, missing_component) ayri ayri "
+        "ne kadar dogru tespit edildigini gosterir. "
+        "Ornegin: 'Eksik vidalarin %100'unu yakaladi mi?'"
+    )
+
+    # Find latest accuracy report
+    report_files = sorted(REPORTS_DIR.glob("accuracy_*.json"), reverse=True)
+
+    if report_files:
+        selected = st.selectbox("Rapor sec", report_files, format_func=lambda p: p.name)
+        try:
+            report = json.loads(selected.read_text(encoding="utf-8"))
+        except Exception as e:
+            st.error(f"Rapor okunamadi: {e}")
+            return
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("mAP50 (Genel Basari)", f"{report.get('mAP50', 0):.4f}")
+        col2.metric("Precision (Yanlis Alarm)", f"{report.get('macro_precision', 0):.4f}")
+        col3.metric("Recall (Kacirma Orani)", f"{report.get('macro_recall', 0):.4f}")
+        col4.metric("F1 (Dengeli Skor)", f"{report.get('macro_f1', 0):.4f}")
+
+        with st.expander("Bu metrikler ne anlama geliyor?"):
+            st.markdown("""
+- **Precision (Kesinlik)**: Model "bu vida eksik" dediginde gercekten eksik mi?
+  - 0.95 = her 100 uyaridan 95'i gercek hata, 5'i yanlis alarm
+- **Recall (Duyarlilik)**: Gercekten eksik olan vidalarin kacini yakaladi?
+  - 1.00 = hicbir eksik vidayi kacirmadi (uretimde EN KRITIK metrik!)
+- **F1**: Precision ve Recall'in dengeli ortalamasi
+- **mAP50**: Tum siniflar icin genel tespit dogrulugu
+""")
+
+        st.subheader("Sinif Bazli Detay")
+        per_class = report.get("per_class", [])
+        if per_class:
+            import pandas as pd
+            df = pd.DataFrame(per_class)
+            # Rename columns for clarity
+            col_rename = {
+                "class_name": "Sinif",
+                "precision": "Precision",
+                "recall": "Recall",
+                "f1": "F1",
+                "true_positives": "Dogru Tespit",
+                "false_positives": "Yanlis Alarm",
+                "false_negatives": "Kacirilan",
+                "support": "Toplam Ornek",
+            }
+            cols_to_show = [c for c in col_rename.keys() if c in df.columns]
+            display_df = df[cols_to_show].rename(columns=col_rename)
+            st.dataframe(display_df, use_container_width=True)
+
+            # Visual bar chart
+            fig, ax = plt.subplots(figsize=(10, 4))
+            x = range(len(df))
+            width = 0.25
+            ax.bar([i - width for i in x], df["precision"], width, label="Precision (Kesinlik)", color="#4CAF50")
+            ax.bar([i for i in x], df["recall"], width, label="Recall (Duyarlilik)", color="#FF9800")
+            ax.bar([i + width for i in x], df["f1"], width, label="F1 (Denge)", color="#2196F3")
+            ax.set_xticks(list(x))
+            ax.set_xticklabels(df["class_name"])
+            ax.set_ylim(0, 1.1)
+            ax.legend()
+            ax.set_title("Sinif Bazli Basari Karsilastirmasi")
+            st.pyplot(fig)
+            plt.close()
+
+        # Confusion matrix
+        cm = report.get("confusion_matrix", [])
+        if cm:
+            st.subheader("Karisiklik Matrisi (Confusion Matrix)")
+            st.caption("Satir = Gercekte ne? | Sutun = Model ne dedi?")
+            class_names = ["screw", "missing_screw", "missing_component", "kacirilan"]
+            import pandas as pd
+            n = min(len(cm), len(class_names))
+            cm_display = []
+            for i in range(n):
+                row = cm[i][:n] if i < len(cm) else [0] * n
+                cm_display.append(row)
+            cm_df = pd.DataFrame(cm_display, index=class_names[:n], columns=class_names[:n])
+            st.dataframe(cm_df, use_container_width=True)
+
+        st.caption(f"Rapor: {selected.name} | {report.get('timestamp', '')}")
+    else:
+        st.warning("Henuz accuracy raporu yok. Olusturmak icin:")
+        st.code(
+            "python src/evaluation/accuracy_report.py "
+            "--model models/phase1_final_ca.pt --split val",
+            language="bash",
+        )
+
+    # Generate report button
+    if st.button("Yeni Accuracy Raporu Olustur"):
+        if MODEL_PATH.exists():
+            st.info("Rapor olusturuluyor... (Bu birka dakika surebilir)")
+            try:
+                from src.evaluation.accuracy_report import run_yolo_evaluation, AccuracyReport
+                data_yaml = ROOT / "data" / "processed" / "phase1_multiclass_v1" / "data.yaml"
+                report = run_yolo_evaluation(
+                    model_path=MODEL_PATH,
+                    data_yaml=data_yaml,
+                    split="val",
+                    device="0",
+                )
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                json_path = REPORTS_DIR / f"accuracy_{MODEL_PATH.stem}_val_{ts}.json"
+                report.to_json(json_path)
+                st.success(f"Rapor olusturuldu: {json_path.name}")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Hata: {e}")
+        else:
+            st.error("Model bulunamadi!")
+
+
+def page_agent_chat():
+    """Page 11: Orchestrator Agent chat interface."""
+    st.header("Agent Chat - Sistem Yonetim Asistani")
+    st.caption(
+        "Dogal dille sistem hakkinda soru sorabilir ve islem yapabilirsin. "
+        "Agent, keyword tabanli calisan bir asistan. LLM degil, "
+        "ama veri, model, kural ve geri bildirim islemlerini yonetir."
+    )
+
+    # Initialize agent in session state
+    if "agent" not in st.session_state:
+        try:
+            from src.agent.orchestrator import OrchestratorAgent
+            st.session_state.agent = OrchestratorAgent()
+            st.session_state.chat_history = []
+        except ImportError:
+            st.error("Agent modulu yuklenemedi!")
+            return
+
+    # Two-column layout: chat + info
+    chat_col, info_col = st.columns([2, 1])
+
+    with info_col:
+        st.markdown("#### Agent Neler Yapabilir?")
+        st.markdown("""
+**Veri Sorgulama:**
+- "Ne kadar datam var?" -> Dataset istatistikleri
+- "Label'lar temiz mi?" -> Weak label kontrolu
+
+**Model Islemleri:**
+- "Accuracy nedir?" -> Mevcut modelin basarisi
+- "Per-class metrikler" -> Sinif bazli detay
+
+**Kural Yonetimi:**
+- "Hangi urun tipleri var?" -> Dinamik kural listesi
+- "Yeni urun ekle" -> rules.yaml'a yeni urun
+
+**Geri Bildirim:**
+- "Geri bildirimleri analiz et" -> Operator feedback ozeti
+- "Retrain gerekli mi?" -> Yeniden egitim kontrolu
+""")
+
+        st.markdown("---")
+        st.markdown("#### Continuous Training")
+        try:
+            from src.mlops.continuous_trainer import ContinuousTrainer
+            trainer = ContinuousTrainer()
+            status = trainer.get_status()
+            uf = status["uncertain_frames"]
+            rd = status["retrain_decision"]
+
+            col1, col2 = st.columns(2)
+            col1.metric("Belirsiz Kare", uf.get("total", 0))
+            col2.metric("Feedback", rd.get("feedback_corrective", 0))
+            retrain = rd.get("should_retrain", False)
+            if retrain:
+                st.error("RETRAIN GEREKLI!")
+            else:
+                st.success("Model guncel")
+            if rd.get("reason"):
+                st.caption(rd["reason"])
+
+            with st.expander("Continuous Training nasil calisiyor?"):
+                st.markdown("""
+1. **Gunduz**: Uretim hattinda model calisiyor
+   - Dusuk guvenli tespitler (conf < 0.40) toplanir
+2. **Gece**: Toplanan verilerle model guncellenir
+   - 100+ belirsiz kare VEYA 50+ operator duzeltmesi
+   - + son egitimden 1+ gun gecmis olmalii
+3. **Otomatik**: Retrain kosullari saglaninca sistem uyarir
+""")
+        except Exception as e:
+            st.warning(f"Continuous trainer: {e}")
+
+    with chat_col:
+        # Chat history display
+        for msg in st.session_state.chat_history:
+            if msg["role"] == "user":
+                st.chat_message("user").write(msg["content"])
+            else:
+                st.chat_message("assistant").write(msg["content"])
+
+        # Chat input
+        user_input = st.chat_input("Agent'a soru sor...")
+        if user_input:
+            st.session_state.chat_history.append({"role": "user", "content": user_input})
+            st.chat_message("user").write(user_input)
+
+            with st.spinner("Agent dusunuyor..."):
+                response = st.session_state.agent.process_message(user_input)
+
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
+            st.chat_message("assistant").write(response)
+
+    # Quick action buttons in sidebar
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Hizli Komutlar")
+    quick_commands = [
+        "Ne kadar datam var?",
+        "Label'lar temiz mi?",
+        "Accuracy nedir?",
+        "Geri bildirimleri analiz et",
+        "Retrain gerekli mi?",
+    ]
+    for cmd in quick_commands:
+        if st.sidebar.button(cmd, key=f"quick_{cmd}"):
+            st.session_state.chat_history.append({"role": "user", "content": cmd})
+            response = st.session_state.agent.process_message(cmd)
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
+            st.rerun()
+
+
 PAGES = {
     "Canli Tahmin": page_inference,
     "Veri & Dengeleme": page_data,
     "Neden CA?": page_ca,
     "MLflow Takibi": page_mlflow,
-    "VLM Stratejisi": page_vlm,
-    "VLM Galeri": page_vlm_gallery,
-    "VLM Metrikler": page_vlm_metrics,
+    "VLM Merkezi": page_vlm_hub,
     "Edge Profiler": page_edge,
     "FP Analizi": page_fp_analysis,
     "Karar & Riskler": page_decisions,
     "Operator Kontrol": page_operator,
+    "Accuracy Metrikleri": page_accuracy,
+    "Agent Chat": page_agent_chat,
 }
 
 

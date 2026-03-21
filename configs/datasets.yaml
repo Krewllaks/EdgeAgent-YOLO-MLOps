@@ -1,8 +1,8 @@
 raw_sources:
-  erdogan1: C:/Users/bahti/Desktop/Goruntuisleme/erdogan1
-  erdogan2: C:/Users/bahti/Desktop/Goruntuisleme/erdogan2
-  roboflow_labeled: C:/Users/bahti/Desktop/Goruntuisleme/roboflowetiketlenen
+  erdogan1: erdogan1
+  erdogan2: erdogan2
+  roboflow_labeled: roboflowetiketlenen
 
 outputs:
-  reports_dir: C:/Users/bahti/Desktop/Goruntuisleme/reports/generated
-  phase1_dataset_dir: C:/Users/bahti/Desktop/Goruntuisleme/data/processed/phase1_multiclass_v1
+  reports_dir: reports/generated
+  phase1_dataset_dir: data/processed/phase1_multiclass_v1

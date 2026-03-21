@@ -102,16 +102,50 @@ class SpatialResult:
 
 
 class SpatialAnalyzer:
-    """Geometric spatial clustering analyzer for screw detection."""
+    """Geometric spatial clustering analyzer for screw detection.
 
-    def __init__(self, n_clusters: int = 4, min_detections: int = 1):
+    Supports dynamic rules via RuleEngine (configs/rules.yaml).
+    If a product_name is given, rules are loaded from config instead of hard-coded.
+    """
+
+    def __init__(
+        self,
+        n_clusters: int = 4,
+        min_detections: int = 1,
+        product_name: Optional[str] = None,
+    ):
         """
         Args:
-            n_clusters: Expected number of screw positions (default: 4)
-            min_detections: Minimum detections to attempt clustering
+            n_clusters: Expected number of screw positions (default: 4).
+                        Overridden by product rule if product_name is given.
+            min_detections: Minimum detections to attempt clustering.
+            product_name: If set, loads dynamic rules from configs/rules.yaml.
         """
-        self.n_clusters = n_clusters
-        self.min_detections = min_detections
+        self._rule = None
+        try:
+            from src.reasoning.dynamic_rules import RuleEngine
+            engine = RuleEngine()
+            self._rule = engine.get_rule(product_name)
+            self.n_clusters = self._rule.n_clusters
+            self.min_detections = self._rule.clustering.get("min_detections", min_detections)
+        except Exception:
+            # Fallback: use provided values (backward compatibility)
+            self.n_clusters = n_clusters
+            self.min_detections = min_detections
+
+    @property
+    def max_total_detections(self) -> int:
+        """Maximum allowed detections before rejecting as impossible."""
+        if self._rule:
+            return self._rule.max_total_detections
+        return 8  # default: 4 screws * 2
+
+    @property
+    def max_missing_components(self) -> int:
+        """Maximum missing component count."""
+        if self._rule:
+            return self._rule.max_missing_components
+        return 2  # default
 
     def cluster_detections(
         self, detections: List[Detection], img_shape: Optional[Tuple[int, int]] = None
@@ -283,7 +317,7 @@ class SpatialAnalyzer:
         detections: List[Detection],
         img_shape: Optional[Tuple[int, int]] = None,
     ) -> SpatialResult:
-        """Full analysis pipeline: cluster -> assign sides -> decision matrix.
+        """Full analysis pipeline: domain check -> cluster -> assign sides -> decision matrix.
 
         Args:
             detections: List of YOLO detections
@@ -298,6 +332,20 @@ class SpatialAnalyzer:
                 confidence=0.0,
                 reason="Hicbir nesne tespit edilemedi",
                 detection_count=0,
+            )
+
+        # Domain constraint check: reject impossible outputs
+        if len(detections) > self.max_total_detections:
+            rule_name = self._rule.name if self._rule else "default"
+            return SpatialResult(
+                verdict="rejected",
+                confidence=0.0,
+                reason=(
+                    f"Tespit sayisi ({len(detections)}) domain kisitiyla uyumsuz "
+                    f"(max={self.max_total_detections}, rule='{rule_name}'). "
+                    f"Auto-tune onerisi: Canny parametrelerini yeniden ayarlayin."
+                ),
+                detection_count=len(detections),
             )
 
         clusters = self.cluster_detections(detections, img_shape)

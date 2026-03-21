@@ -1,5 +1,6 @@
 import argparse
 import csv
+import os
 from datetime import datetime
 from pathlib import Path
 import shutil
@@ -7,6 +8,12 @@ import sys
 from typing import Optional
 
 import torch
+
+try:
+    import mlflow
+    MLFLOW_OK = True
+except ImportError:
+    MLFLOW_OK = False
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -123,6 +130,30 @@ def parse_map50_from_csv(results_csv: Path) -> Optional[float]:
     return None
 
 
+def _log_epoch_metrics(results_csv: Path) -> None:
+    """Log per-epoch metrics from YOLO results.csv to MLflow."""
+    if not MLFLOW_OK or not results_csv.exists():
+        return
+    with results_csv.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    metric_keys = [
+        "metrics/mAP50(B)", "metrics/mAP50-95(B)",
+        "metrics/precision(B)", "metrics/recall(B)",
+        "train/box_loss", "train/cls_loss", "train/dfl_loss",
+        "val/box_loss", "val/cls_loss", "val/dfl_loss",
+    ]
+    for epoch_idx, row in enumerate(rows):
+        for key in metric_keys:
+            val = row.get(key, "").strip()
+            if val:
+                try:
+                    mlflow_key = key.replace("/", "_").replace("(", "").replace(")", "")
+                    mlflow.log_metric(mlflow_key, float(val), step=epoch_idx)
+                except (ValueError, TypeError):
+                    pass
+
+
 def resolve_run_dir(model, explicit_project: str, explicit_name: str) -> Path:
     trainer = getattr(model, "trainer", None)
     save_dir = getattr(trainer, "save_dir", None)
@@ -222,6 +253,32 @@ def main() -> None:
         print(f"- amp(default): {args.amp}")
         return
 
+    # ── MLflow setup ──
+    if MLFLOW_OK:
+        # Use MLflow server if running, otherwise fallback to local SQLite
+        mlflow_server = os.environ.get("MLFLOW_TRACKING_URI", "")
+        if mlflow_server:
+            mlflow.set_tracking_uri(mlflow_server)
+        else:
+            mlflow.set_tracking_uri(f"sqlite:///{ROOT / 'mlflow.db'}")
+        mlflow.set_experiment("EdgeAgent-YOLO-Training")
+        mlflow.start_run(run_name=args.name)
+        mlflow.log_params({
+            "model_cfg": str(args.model_cfg.name),
+            "pretrained": args.pretrained,
+            "data": str(args.data.name),
+            "epochs": args.epochs,
+            "batch": args.batch,
+            "imgsz": args.imgsz,
+            "amp": args.amp,
+            "workers": args.workers,
+            "seed": args.seed,
+            "device": device,
+            "close_mosaic": 10,
+            "patience": 25,
+        })
+        print("[MLflow] Run started")
+
     model.train(
         data=str(args.data),
         epochs=args.epochs,
@@ -250,6 +307,34 @@ def main() -> None:
     final_results_csv = run_dir / "results.csv"
     final_map50 = parse_map50_from_csv(final_results_csv)
     baseline_map50 = parse_map50_from_csv(args.baseline_results)
+
+    # ── MLflow: log metrics & artifacts ──
+    if MLFLOW_OK:
+        # Log epoch-by-epoch metrics from results.csv
+        if final_results_csv.exists():
+            _log_epoch_metrics(final_results_csv)
+
+        # Log final summary metrics
+        if final_map50 is not None:
+            mlflow.log_metric("final_mAP50", final_map50)
+        if baseline_map50 is not None:
+            mlflow.log_metric("baseline_mAP50", baseline_map50)
+            if final_map50 is not None:
+                mlflow.log_metric("delta_mAP50", final_map50 - baseline_map50)
+
+        # Log best model as artifact
+        if best_src.exists():
+            mlflow.log_artifact(str(args.output_best), artifact_path="model")
+
+        # Log training curves if available
+        for plot_name in ["results.png", "confusion_matrix.png", "PR_curve.png",
+                          "F1_curve.png", "P_curve.png", "R_curve.png"]:
+            plot_path = run_dir / plot_name
+            if plot_path.exists():
+                mlflow.log_artifact(str(plot_path), artifact_path="plots")
+
+        mlflow.end_run()
+        print("[MLflow] Run logged successfully")
 
     write_final_report(
         report_path=args.final_report,

@@ -91,6 +91,182 @@ def preview_enhancement(
     return original_rgb, edges_rgb, blended_rgb
 
 
+# Domain constraints: maximum possible detections per class
+# Based on the physical hardware being inspected
+MAX_PER_CLASS = {
+    0: 4,   # screw: max 4
+    1: 4,   # missing_screw: max 4
+    2: 2,   # missing_component: max 2
+}
+MAX_TOTAL_DETECTIONS = 10  # absolute upper bound
+
+
+def _count_per_class(boxes) -> dict[int, int]:
+    """Count detections per class from YOLO boxes."""
+    counts: dict[int, int] = {}
+    for i in range(len(boxes)):
+        cls_id = int(boxes.cls[i])
+        counts[cls_id] = counts.get(cls_id, 0) + 1
+    return counts
+
+
+def _is_valid_detection(boxes) -> bool:
+    """Check if detection counts are physically plausible.
+
+    Returns False if any class exceeds its max count (false positive explosion).
+    """
+    if len(boxes) > MAX_TOTAL_DETECTIONS:
+        return False
+    counts = _count_per_class(boxes)
+    for cls_id, count in counts.items():
+        if count > MAX_PER_CLASS.get(cls_id, 4):
+            return False
+    return True
+
+
+def _smart_score(boxes) -> float:
+    """Score detections with domain-aware penalty.
+
+    Base score: sum of confidences (rewards high-confidence detections).
+    Penalty: if any class exceeds max count, score = 0 (invalid).
+    Bonus: higher avg confidence = better (fewer false positives).
+    """
+    n = len(boxes)
+    if n == 0:
+        return 0.0
+
+    # Hard reject if physically impossible
+    if not _is_valid_detection(boxes):
+        return -1.0
+
+    # Score = avg_confidence * valid_detection_count
+    # This rewards finding real objects with high confidence
+    # rather than finding many low-confidence false positives
+    avg_conf = float(boxes.conf.mean())
+    min_conf = float(boxes.conf.min())
+
+    # Penalize if any detection is very low confidence (likely FP)
+    low_conf_penalty = max(0.0, 1.0 - max(0.0, 0.40 - min_conf) * 2)
+
+    return n * avg_conf * low_conf_penalty
+
+
+def auto_tune_fast(
+    img: np.ndarray,
+    model,
+    imgsz: int = 640,
+    conf: float = 0.25,
+    iou: float = 0.45,
+    class_limits: dict[int, int] | None = None,
+) -> dict:
+    """Find optimal Canny parameters by maximizing YOLO detection quality.
+
+    Coarse-to-fine search with domain constraints:
+    - Rejects parameter sets that produce physically impossible detections
+      (e.g., >4 screws when hardware has max 4 screw positions)
+    - Penalizes low-confidence detections (likely false positives from edges)
+    - Prefers the original image if enhancement doesn't improve quality
+
+    Args:
+        img: BGR image (OpenCV format)
+        model: YOLO model instance
+        imgsz: YOLO input size
+        conf: YOLO confidence threshold
+        iou: YOLO IoU threshold for NMS
+        class_limits: Override max detections per class {cls_id: max_count}
+    """
+    import tempfile
+    import os
+
+    # Apply custom class limits if provided
+    if class_limits:
+        for cls_id, limit in class_limits.items():
+            MAX_PER_CLASS[cls_id] = limit
+
+    tmp_dir = tempfile.mkdtemp()
+    enh_path = os.path.join(tmp_dir, "enh.jpg")
+    orig_path = os.path.join(tmp_dir, "orig.jpg")
+    cv2.imwrite(orig_path, img)
+
+    def _evaluate(image_path):
+        r = model.predict(image_path, imgsz=imgsz, conf=conf, iou=iou, verbose=False)
+        boxes = r[0].boxes
+        return _smart_score(boxes), len(boxes), boxes
+
+    def _score_params(alpha, cl, ch):
+        enhanced = enhance_single(img, alpha, cl, ch)
+        cv2.imwrite(enh_path, enhanced)
+        score, n, boxes = _evaluate(enh_path)
+        avg_c = float(boxes.conf.mean()) if n > 0 else 0.0
+        valid = _is_valid_detection(boxes)
+        per_class = _count_per_class(boxes)
+        return score, n, avg_c, valid, per_class
+
+    # Baseline (original)
+    orig_score, orig_n, orig_boxes = _evaluate(orig_path)
+    orig_avg = float(orig_boxes.conf.mean()) if orig_n > 0 else 0.0
+    orig_valid = _is_valid_detection(orig_boxes)
+    orig_per_class = _count_per_class(orig_boxes)
+
+    best_score = orig_score
+    best_params = (0.7, 50, 150)
+    best_n, best_avg = orig_n, orig_avg
+    best_valid = orig_valid
+    best_per_class = orig_per_class
+
+    # Coarse search
+    for alpha in [0.5, 0.7, 0.85]:
+        for cl in [30, 60, 100]:
+            for ch in [100, 170, 250]:
+                if ch <= cl:
+                    continue
+                s, n, a, v, pc = _score_params(alpha, cl, ch)
+                if s > best_score:
+                    best_score = s
+                    best_params = (alpha, cl, ch)
+                    best_n, best_avg = n, a
+                    best_valid = v
+                    best_per_class = pc
+
+    # Fine search around best
+    ba, bcl, bch = best_params
+    for alpha in [max(0.3, ba - 0.1), ba, min(1.0, ba + 0.1)]:
+        for cl in [max(10, bcl - 15), bcl, bcl + 15]:
+            for ch in [max(50, bch - 25), bch, bch + 25]:
+                if ch <= cl:
+                    continue
+                s, n, a, v, pc = _score_params(alpha, cl, ch)
+                if s > best_score:
+                    best_score = s
+                    best_params = (alpha, cl, ch)
+                    best_n, best_avg = n, a
+                    best_valid = v
+                    best_per_class = pc
+
+    # Cleanup
+    try:
+        os.remove(orig_path)
+        os.remove(enh_path)
+        os.rmdir(tmp_dir)
+    except OSError:
+        pass
+
+    is_original = best_score <= orig_score
+    return {
+        "alpha": best_params[0],
+        "canny_low": best_params[1],
+        "canny_high": best_params[2],
+        "score": best_score,
+        "det_count": best_n,
+        "avg_conf": best_avg,
+        "original_score": orig_score,
+        "is_original": is_original,
+        "valid": best_valid,
+        "per_class": best_per_class,
+        "orig_per_class": orig_per_class,
+    }
+
+
 def enhance_dataset(
     input_dir: Path,
     output_dir: Path,

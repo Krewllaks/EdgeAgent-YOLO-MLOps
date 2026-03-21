@@ -4,7 +4,7 @@
 vlm:
   model_id: "google/paligemma-3b-mix-224"
   quantization: "nf4"                    # BitsAndBytes NF4 (~2.8GB VRAM)
-  max_latency_ms: 2000                   # Operator tolerance: 2 seconds
+  max_latency_ms: 4000                   # RTX 3050 float16: ~3000-4000ms
   warmup_runs: 2                         # Dummy inferences after load
   crop_padding_ratio: 0.20               # 20% padding around YOLO bbox
   max_new_tokens: 256

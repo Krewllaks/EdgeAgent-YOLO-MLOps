@@ -1,0 +1,70 @@
+# EdgeAgent — Product Inspection Rules
+# Bu dosya ürün tipine göre denetim kurallarını tanımlar.
+# Hard-coded rule'lar yerine bu config dosyası kullanılır.
+# Yeni ürün tipi eklemek için "products" altına yeni bir entry ekleyin.
+
+# Varsayılan ürün tipi
+default_product: "4_screw_component"
+
+products:
+  4_screw_component:
+    description: "4 vidalı standart komponent (sol 2, sağ 2)"
+    total_screw_positions: 4
+    sides: 2
+    screws_per_side: 2
+    max_missing_components: 2
+    classes:
+      - id: 0
+        name: screw
+        role: fastener  # bağlantı elemanı
+      - id: 1
+        name: missing_screw
+        role: defect_fastener  # eksik bağlantı
+      - id: 2
+        name: missing_component
+        role: defect_structural  # eksik yapısal eleman
+
+    # Per-side karar matrisi
+    # side_status: S=tüm vidalar var, MS=vida eksik, MC=komponent eksik
+    side_rules:
+      all_present: "S"      # tüm vidalar mevcut
+      partial_missing: "MS"  # bazı vidalar eksik, komponent var
+      all_missing: "MC"      # tüm vidalar eksik = komponent yok
+
+    # Genel karar matrisi (left_status x right_status -> verdict)
+    decision_matrix:
+      S_S: "OK"
+      S_MS: "missing_screw"
+      MS_S: "missing_screw"
+      MS_MS: "missing_screw"
+      MC_any: "missing_component"
+      any_MC: "missing_component"
+
+    # Domain kısıtları
+    constraints:
+      max_total_detections: 8  # 4 screw + 4 potansiyel missing = max 8
+      reject_if_total_exceeds: true
+      auto_tune_on_reject: true
+
+    # Clustering parametreleri
+    clustering:
+      n_clusters: 4
+      min_detections: 1
+      side_assignment: "median_x"  # x koordinat medyanına göre
+
+  # Gelecekte eklenebilecek örnek ürün tipleri:
+  # 6_screw_panel:
+  #   description: "6 vidalı panel (sol 3, sağ 3)"
+  #   total_screw_positions: 6
+  #   sides: 2
+  #   screws_per_side: 3
+  #   max_missing_components: 2
+  #   ...
+
+  # 2_screw_bracket:
+  #   description: "2 vidalı braket (sol 1, sağ 1)"
+  #   total_screw_positions: 2
+  #   sides: 2
+  #   screws_per_side: 1
+  #   max_missing_components: 2
+  #   ...

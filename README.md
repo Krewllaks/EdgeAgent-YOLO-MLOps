@@ -1,173 +1,211 @@
 # EdgeAgent-YOLO-MLOps
 
-Scalable MLOps framework for industrial quality control.
+Endustriyel kalite kontrol icin iki katmanli AI + MLOps sistemi.
 
-This repository contains the Sprint 1 implementation of a two-layer inspection pipeline:
+**Hiz Katmani:** YOLOv10-S + Coordinate Attention (mAP50: 0.9943)
+**Bilissel Katman:** PaliGemma 3B VLM — belirsiz tespitlerde dogal dil aciklamasi
+**MLOps:** Active Learning, Concept Drift, Operator Feedback, MLflow
 
-- **Fast detection layer:** YOLOv10-S + Coordinate Attention (CA)
-- **Cognitive layer (planned):** PaliGemma-based reasoning for natural-language defect analysis
+---
 
-The current focus is Phase 1: robust OK/NOK detection for `screw`, `missing_screw`, and `missing_component`.
+## Hizli Baslangic
 
-## Sprint 1 Status (Final Phase 1)
-
-- Model: **YOLOv10-S + CA** (`configs/models/yolov10s_ca.yaml`)
-- Best validation metric: **mAP50 = 0.9943 (~99.43%)**
-- Baseline (plain YOLO smoke run): **mAP50 = 0.49417**
-- Improvement: **+0.50004 mAP50**
-- Final model artifact: `models/phase1_final_ca.pt`
-- Comparison report: `reports/final_phase1_report.md`
-
-## Hardware Requirements
-
-- OS: Windows 10/11
-- Python: 3.10+
-- GPU: NVIDIA RTX 3050 (4 GB VRAM target)
-- CUDA: 12.1 (for GPU training)
-
-## Installation
+### 1) Kurulum
 
 ```bash
+git clone <repo-url>
+cd Goruntuisleme
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\activate          # Windows
 pip install -r requirements.txt
 ```
 
-If CUDA is not detected after install, run the explicit CUDA 12.1 wheel command:
+GPU gorunmuyorsa CUDA 12.1 wheel yukle:
 
 ```bash
 pip uninstall -y torch torchvision torchaudio
 pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
 ```
 
-Verify GPU visibility:
+GPU dogrulama:
 
 ```bash
 python scripts/check_gpu.py
 ```
 
-## Workflow (Recommended Order)
-
-### 1) Prepare Dataset
-
-Convert labeled Roboflow export into canonical YOLO split:
+### 2) Dataset Hazirlama
 
 ```bash
+# V1 (Roboflow COCO -> YOLO)
 python scripts/prepare_phase1_dataset.py
-```
 
-### 2) Augment Integration + Imbalance Analysis
-
-Ingest `coklanmis/` and `coklanmisacili/` data into `train` with duplicate and leakage checks:
-
-```bash
-python src/data/augment_analysis.py
-python src/data/augment_analysis.py --clean-augmented  # remove old weak labels first
+# Augmentation entegrasyonu
+python src/data/augment_analysis.py --clean-augmented
 python src/data/augment_analysis.py --source-dir coklanmis --source-dir coklanmisacili
-```
 
-Fast V2 pipeline (base split + augmented ingestion):
-
-```bash
+# V2 tek komut
 python scripts/prepare_v2_dataset.py
 ```
 
-Outputs:
-
-- `reports/generated/augmentation_imbalance_latest.json`
-- `reports/generated/augmentation_imbalance_latest.png`
-
-### 2b) Edge Enhancement (Canny Preprocessing)
-
-Apply Canny edge blending for metal surface reflection suppression:
+### 3) Egitim
 
 ```bash
-python src/data/edge_enhancer.py --image path/to/img.jpg --preview
-python src/data/edge_enhancer.py --input-dir data/processed/phase1_v2/train/images --output-dir data/processed/phase1_v2_edge/train/images
+python scripts/train_final_phase1.py \
+    --data data/processed/phase1_multiclass_v1/data.yaml \
+    --model-cfg configs/models/yolov10s_ca.yaml \
+    --epochs 100 --batch 8 --imgsz 640 --amp --workers 4 --device 0
 ```
 
-### 3) UI Technical Dashboard
+Egitim bitince otomatik olarak:
+- Best model -> `models/phase1_final_ca.pt`
+- Karsilastirma raporu -> `reports/final_phase1_report.md`
 
-Launch the Sprint 1 technical monitoring dashboard:
+### 4) Dashboard
 
 ```bash
 streamlit run src/ui/sprint1_dashboard.py
 ```
 
-Dashboard includes:
-
-- Live inference playground (image upload + YOLO prediction)
-- Edge Enhancement preview (Canny blending with parameter tuning)
-- Spatial Clustering analysis (geometric post-processing with decision matrix)
-- Class balance before/after visualization
-- Coordinate Attention rationale
-- MLflow experiment tracking integration
-- Phase 2 VLM async trigger strategy (visual flow diagram)
-- Edge profiler results (Jetson Orin Nano estimate)
-- FP analysis and Active Learning feedback
-- Decision snapshot and operator controls
-
-### 4) Edge Profiler (Phase 2 Prep)
-
-Benchmark model latency and estimate Jetson Orin Nano performance:
+### 5) MLflow
 
 ```bash
-python src/edge/profiler.py --model models/phase1_final_ca.pt --source data/processed/phase1_multiclass_v1/test/images
+mlflow ui --port 5000
 ```
 
-### 5) VLM Trigger Test (Phase 2 Prep)
+Tarayicida ac: [http://localhost:5000](http://localhost:5000)
 
-Simulate PaliGemma activation on low-confidence detections:
+Tum egitim deneyleri, hyperparametreler ve metrikler burada goruntulenir.
+`mlruns/` klasoru `.gitignore`'da oldugu icin her takim uyesi kendi yerel MLflow veritabanini olusturur.
+
+### 6) VLM (PaliGemma) Kurulumu
 
 ```bash
-python src/edge/vlm_trigger.py --model models/phase1_final_ca.pt --source data/processed/phase1_multiclass_v1/test/images --conf-threshold 0.40
+pip install huggingface_hub
+python -c "from huggingface_hub import login; login()"
 ```
 
-### 6) TensorRT Export (Edge Deployment)
+Token'i girdikten sonra dashboard uzerinden "VLM Yukle" butonuyla model VRAM'e alinir.
 
-Export model to TensorRT FP16 engine for Jetson Orin Nano:
+### 7) Edge Profiling
 
 ```bash
-python scripts/export_tensorrt.py --half
-python scripts/export_tensorrt.py --dry-run  # config only
+# Jetson Orin Nano latency tahmini
+python src/edge/profiler.py --model models/phase1_final_ca.pt \
+    --source data/processed/phase1_multiclass_v1/test/images
+
+# VLM tetikleme simulasyonu
+python src/edge/vlm_trigger.py --model models/phase1_final_ca.pt \
+    --source data/processed/phase1_multiclass_v1/test/images --conf-threshold 0.40
+
+# TensorRT export
+python scripts/export_tensorrt.py --half          # FP16
+python scripts/export_tensorrt.py --int8 --half   # INT8
 ```
 
-## Training
+---
 
-### Model V1 (Sprint 1 - Phase 1)
+## Sistem Mimarisi
 
-```bash
-python scripts/train_final_phase1.py --data data/processed/phase1_multiclass_v1/data.yaml --model-cfg configs/models/yolov10s_ca.yaml --epochs 100 --batch 8 --imgsz 640 --amp --workers 4 --device 0
+```
+Kamera Frame --> [YOLO + CA] --OK--> Dashboard
+                     |
+                     | conf < 0.40
+                     v
+               [Async Queue] --> [PaliGemma VLM] --> Yorum
+                     |
+                     v
+            [Conflict Resolver] --> YOLO vs Spatial vs VLM
+                     |
+                     v
+              [RCA Template] --> Turkce neden analizi
+                     |
+                     v
+               [Operator Feedback] --> Active Learning --> Retrain
 ```
 
-### Model V2 (All data sources)
+---
 
-```bash
-python scripts/train_final_phase1.py --data data/processed/phase1_v2/data.yaml --epochs 100 --batch 8 --imgsz 640 --amp --workers 4 --device 0
+## Sprint 1 Sonuclari
+
+| Metrik | Baseline | Final | Delta |
+|--------|----------|-------|-------|
+| mAP50(B) | 0.4942 | 0.9942 | +0.5000 |
+
+- Model: YOLOv10-S + Coordinate Attention
+- 3 sinif: `screw`, `missing_screw`, `missing_component`
+- Train: 4174 goruntu, 3180 bbox
+
+---
+
+## Donanim Gereksinimleri
+
+- OS: Windows 10/11
+- Python: 3.10+
+- GPU: NVIDIA RTX 3050 (4 GB VRAM)
+- CUDA: 12.1
+
+VRAM butcesi:
+- YOLO: ~500 MB
+- PaliGemma float16: ~2800 MB
+- Toplam: ~3700 MB
+
+---
+
+## Repository Yapisi
+
+```
+src/
+  data/
+    augment_analysis.py       # Augmentation + leakage check
+    edge_enhancer.py          # Canny enhancement + domain-aware auto-tune
+  edge/
+    profiler.py               # Jetson latency tahmini
+    vlm_trigger.py            # VLM async tetikleme
+    mqtt_bridge.py            # MQTT IoT bridge
+  models/
+    coordatt.py               # Coordinate Attention (tek kaynak)
+  reasoning/
+    vlm_reasoner.py           # PaliGemma VLM engine
+    spatial_logic.py          # Geometrik mekansal kumeleme
+    conflict_resolver.py      # YOLO vs Spatial vs VLM arbitrasyon
+    rca_templates.py          # 10 Turkce RCA sablonu
+  mlops/
+    active_learning.py        # Operator feedback -> retrain
+    drift_detector.py         # SSIM concept drift
+  ui/
+    sprint1_dashboard.py      # Streamlit dashboard (9 sayfa)
+
+scripts/
+  check_gpu.py                # GPU dogrulama
+  train_final_phase1.py       # Final egitim + rapor
+  prepare_phase1_dataset.py   # COCO -> YOLO donusum
+  prepare_v2_dataset.py       # V2 dataset
+  export_tensorrt.py          # TensorRT FP16/INT8
+  generate_vlm_captions.py    # VLM caption uretimi
+
+configs/
+  models/yolov10s_ca.yaml     # Model mimari konfig
+  phase2_config.yaml          # VLM, queue, drift, AL, MQTT
 ```
 
-Post-training automation:
+---
 
-- copies best checkpoint to `models/phase1_final_ca.pt` (V1) or `models/phase1_v2_ca.pt` (V2)
-- writes comparison report to `reports/`
+## Dashboard Sayfalari
 
-## Repository Layout
+1. **Canli Analiz** — 3 sutun: YOLO Tespit | Edge Enhancement | Mekansal Kumeleme + VLM
+2. **Veri Dengeleme** — Sinif dagilimi oncesi/sonrasi
+3. **Neden CA?** — Coordinate Attention aciklama
+4. **MLflow Takibi** — Deney metrikleri
+5. **Edge Profiler** — Jetson Orin Nano tahminleri
+6. **VLM Merkezi** — Strateji, Anomali Galerisi, Performans Metrikleri
+7. **FP Analizi** — False positive + Active Learning istatistikleri
+8. **Karar Tablosu** — Ozet KPI'lar
+9. **Operator Kontrol** — VLM yukle/kaldir, acil durdurma
 
-- `src/models/` - shared modules (CoordAtt attention layer)
-- `src/edge/` - edge deployment tools (profiler, VLM trigger)
-- `src/reasoning/` - spatial logic and geometric clustering post-processor
-- `src/ui/` - Streamlit dashboard (11 pages)
-- `src/data/` - data processing, augmentation analysis, edge enhancement
-- `scripts/` - operational scripts (prepare, train, infer, gpu check, TensorRT export)
-- `configs/` - model and dataset configs
-- `docs/` - strategy, collaboration guide, setup guides, status
-- `reports/` - reproducible reports (`generated/` ignored in git)
+---
 
-## Collaboration Notes
+## Detayli Bilgi
 
-Large/local data and training artifacts are intentionally excluded from git:
+Tum teknik detaylar, kod aciklamalari, konfigurasyon parametreleri ve sorun giderme icin:
 
-- `erdogan1/`, `erdogan2/`, `coklanmis/`, `coklanmisacili/`, `roboflowetiketlenen/`
-- `data/processed/`, `runs/`, `mlruns/`, `*.pt`
-
-This keeps the repository lightweight and reproducible for team onboarding.
+**[goruntuislemebilgi.md](goruntuislemebilgi.md)**

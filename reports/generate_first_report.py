@@ -13,8 +13,8 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
 # ── Paths ──────────────────────────────────────────────────────────
-BASE = r"C:\Users\bahti\Desktop\Goruntuisleme"
-TEMPLATE = r"C:\Users\bahti\Desktop\Capstone_Project\Final-Report-Template.docx"
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TEMPLATE = os.path.join(BASE, "reports", "Final-Report-Template.docx")
 OUTPUT = os.path.join(BASE, "reports", "Sprint1_First_Report.docx")
 
 IMG = {

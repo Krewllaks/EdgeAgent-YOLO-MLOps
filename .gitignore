@@ -40,11 +40,15 @@ erdogan2/MLOps Çalışmaları/
 roboflowetiketlenen/
 coklanmis/
 coklanmisacili/
+coklanmis1000/
+coklanmisyeni/
 data/raw/
 data/interim/
 data/processed/
 data/external/
 data/feedback/
+data/augmented/
+data/audit/
 
 # Local agent workspace
 .claude/
@@ -58,11 +62,15 @@ logs/
 
 # Model and export artifacts
 models/*.pt
+models/registry/
 *.pt
 *.onnx
 *.engine
 *.tflite
 *.torchscript
+*.ckpt
+*.pth
+*.bin
 
 # Generated report artifacts
 reports/generated/*
@@ -71,3 +79,15 @@ reports/generated/*
 # Local inspection dump
 dosya_yapisi.md
 dosya_yapisi.txt
+
+# Jupyter outputs
+*.ipynb
+
+# Python coverage
+.coverage
+htmlcov/
+
+# Temporary files
+*.tmp
+*.temp
+*.log

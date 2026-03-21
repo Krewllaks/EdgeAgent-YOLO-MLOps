@@ -187,7 +187,7 @@ class VLMReasoner:
                     model_id,
                     quantization_config=bnb_config,
                     device_map="auto",
-                    torch_dtype=torch.float16,
+                    dtype=torch.float16,
                 )
             except ImportError:
                 logger.warning(
@@ -195,7 +195,7 @@ class VLMReasoner:
                 )
                 self._model = PaliGemmaForConditionalGeneration.from_pretrained(
                     model_id,
-                    torch_dtype=torch.float16,
+                    dtype=torch.float16,
                     device_map="auto",
                 )
         else:
@@ -206,7 +206,7 @@ class VLMReasoner:
             )
 
         self._model.eval()
-        self._processor = AutoProcessor.from_pretrained(model_id)
+        self._processor = AutoProcessor.from_pretrained(model_id, use_fast=True)
 
         # Warmup inferences to fill CUDA caches
         warmup_runs = self._config.get("warmup_runs", 2)
@@ -227,7 +227,7 @@ class VLMReasoner:
         for i in range(n):
             try:
                 inputs = self._processor(
-                    text="Describe this image.",
+                    text="<image>Describe this image.",
                     images=dummy,
                     return_tensors="pt",
                 )
@@ -313,6 +313,10 @@ class VLMReasoner:
 
         if prompt is None:
             prompt = self._config.get("prompt_template", _DEFAULT_PROMPT).strip()
+
+        # PaliGemma requires <image> token prefix
+        if "<image>" not in prompt:
+            prompt = "<image>" + prompt
 
         # Convert numpy to PIL
         if image.ndim == 3 and image.shape[2] == 3:

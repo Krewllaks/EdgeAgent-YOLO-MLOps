@@ -1,0 +1,65 @@
+# EdgeAgent Production Configuration
+# Fabrika uretim hatti yapilandirmasi
+
+camera:
+  type: "usb"
+  device_id: 0
+  width: 1280
+  height: 1024
+  fps: 30
+  trigger_mode: "freerun"
+  reconnect_attempts: 5
+
+model:
+  path: "models/phase1_final_ca.pt"
+  prefer: "auto"           # auto | onnx | ultralytics
+  challenger_path: ""      # Shadow mode icin ikinci model
+
+pipeline:
+  confidence_threshold: 0.25
+  vlm_trigger_threshold: 0.40
+  imgsz: 640
+  product_name: "4_screw_component"
+
+shadow_mode: false          # true = challenger model paralel calisir
+
+mqtt:
+  enabled: false
+  broker: "localhost"
+  port: 1883
+  topic_prefix: "edgeagent/factory"
+  qos: 1
+
+opcua:
+  enabled: false
+  endpoint: "opc.tcp://0.0.0.0:4840/edgeagent"
+  server_name: "EdgeAgent QC Server"
+
+watchdog:
+  check_interval_sec: 30
+  heartbeat_timeout_sec: 10
+  min_disk_gb: 1.0
+  max_gpu_temp_c: 85
+  max_gpu_memory_pct: 90
+
+shifts:
+  - name: "Sabah"
+    start: "08:00"
+    end: "16:00"
+  - name: "Aksam"
+    start: "16:00"
+    end: "00:00"
+  - name: "Gece"
+    start: "00:00"
+    end: "08:00"
+
+continuous_training:
+  min_uncertain_frames: 100
+  min_feedback_corrections: 50
+  ssim_drift_threshold: 0.15
+  retrain_augmented_count: 1000
+  auto_deploy: false        # true = otomatik hot-swap, false = operator onayi gerekli
+
+audit:
+  log_dir: "data/audit"
+  retention_days: 365

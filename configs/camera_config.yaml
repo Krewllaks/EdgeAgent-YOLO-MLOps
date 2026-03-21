@@ -1,0 +1,16 @@
+# Kamera Yapilandirmasi
+# Desteklenen tipler: usb, rtsp, gige, file, mock
+
+camera:
+  type: "usb"              # usb | rtsp | gige | file | mock
+  device_id: 0             # USB kamera ID
+  url: ""                  # RTSP: rtsp://192.168.1.100:554/stream
+  file_path: ""            # File modu: video veya goruntu klasoru yolu
+  width: 1280
+  height: 1024
+  fps: 30
+  exposure_us: -1          # -1 = otomatik, >0 = sabit (mikrosaniye)
+  gain: -1.0               # -1 = otomatik
+  trigger_mode: "freerun"  # freerun | software | hardware
+  reconnect_attempts: 5
+  reconnect_delay_sec: 2.0
