@@ -35,7 +35,7 @@ LATEST_JSON = REPORTS_DIR / "augmentation_imbalance_latest.json"
 LATEST_PNG = REPORTS_DIR / "augmentation_imbalance_latest.png"
 MODEL_PATH = ROOT / "models" / "phase1_final_ca.pt"
 
-CLASS_NAMES = {0: "screw", 1: "missing_screw", 2: "missing_component"}
+from src.common.constants import CLASS_NAMES
 CLASS_COLORS = {"screw": "#4CAF50", "missing_screw": "#FF9800", "missing_component": "#F44336"}
 
 # ── Early CoordAtt Registration (must happen before torch.load) ─────

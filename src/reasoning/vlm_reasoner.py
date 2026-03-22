@@ -30,7 +30,8 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import yaml
+
+from src.common.config import load_section
 
 logger = logging.getLogger(__name__)
 
@@ -128,21 +129,12 @@ class VLMReasoner:
     """
 
     def __init__(self, config_path: Path = DEFAULT_CONFIG):
-        self._config = self._load_config(config_path)
+        self._config = load_section("vlm", config_path)
         self._model = None
         self._processor = None
         self._loaded = False
         self._lock = threading.Lock()
         self._device = None
-
-    @staticmethod
-    def _load_config(path: Path) -> dict:
-        if path.exists():
-            with open(path, encoding="utf-8") as f:
-                cfg = yaml.safe_load(f)
-            return cfg.get("vlm", {})
-        logger.warning("Phase 2 config not found at %s, using defaults", path)
-        return {}
 
     @property
     def model_id(self) -> str:

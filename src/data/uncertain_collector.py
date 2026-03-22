@@ -81,20 +81,22 @@ class UncertainCollector:
 
     def collect_frame(
         self,
-        image_path: Path,
+        image,
         detections: list,
         reason: str = "low_confidence",
     ) -> Optional[UncertainFrame]:
         """Save an uncertain frame for later processing.
 
         Args:
-            image_path: Path to the source image
+            image: Path to source image OR numpy array (BGR)
             detections: YOLO detections [{class_id, confidence, bbox, class_name}]
             reason: Why this frame was collected
 
         Returns:
             UncertainFrame record, or None if storage is full
         """
+        import cv2
+
         # Check storage limit
         existing = list(self.images_dir.glob("*.jpg")) + list(self.images_dir.glob("*.png"))
         if len(existing) >= self.max_stored:
@@ -102,11 +104,18 @@ class UncertainCollector:
             oldest = min(existing, key=lambda p: p.stat().st_mtime)
             oldest.unlink()
 
-        # Copy image
+        # Save image — accept both Path and numpy array
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        dest_name = f"uncertain_{timestamp}{image_path.suffix}"
-        dest_path = self.images_dir / dest_name
-        shutil.copy2(image_path, dest_path)
+        if isinstance(image, (str, Path)):
+            dest_name = f"uncertain_{timestamp}{Path(image).suffix}"
+            dest_path = self.images_dir / dest_name
+            shutil.copy2(image, dest_path)
+        elif isinstance(image, np.ndarray):
+            dest_name = f"uncertain_{timestamp}.jpg"
+            dest_path = self.images_dir / dest_name
+            cv2.imwrite(str(dest_path), image)
+        else:
+            return None
 
         # Compute stats
         confidences = [d.get("confidence", 0) for d in detections] if detections else [0]
@@ -181,3 +190,47 @@ class UncertainCollector:
             self.images_dir.glob("*"),
             key=lambda p: p.stat().st_mtime,
         )
+
+    def get_unlabeled_images(self) -> list:
+        """Return images that don't have a VLM pseudo-label yet."""
+        labels_dir = self.output_dir / "labels"
+        images = self.get_image_paths()
+        unlabeled = []
+        for img in images:
+            if img.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"}:
+                label_path = labels_dir / f"{img.stem}.txt"
+                if not label_path.exists():
+                    unlabeled.append(img)
+        return unlabeled
+
+    def save_pseudo_label(self, image_path: Path, label_lines: list) -> Path:
+        """Save VLM-generated pseudo-label for an uncertain frame.
+
+        Args:
+            image_path: Path to the uncertain image
+            label_lines: YOLO format lines ["class_id cx cy w h", ...]
+
+        Returns:
+            Path to saved label file
+        """
+        labels_dir = self.output_dir / "labels"
+        labels_dir.mkdir(parents=True, exist_ok=True)
+        label_path = labels_dir / f"{image_path.stem}.txt"
+        label_path.write_text("\n".join(label_lines), encoding="utf-8")
+        return label_path
+
+    def get_labeled_pairs(self) -> list:
+        """Return (image_path, label_path) pairs for CT-ready data."""
+        labels_dir = self.output_dir / "labels"
+        if not labels_dir.exists():
+            return []
+        pairs = []
+        for label_path in sorted(labels_dir.glob("*.txt")):
+            if label_path.stat().st_size == 0:
+                continue
+            for ext in [".jpg", ".jpeg", ".png"]:
+                img_path = self.images_dir / f"{label_path.stem}{ext}"
+                if img_path.exists():
+                    pairs.append((img_path, label_path))
+                    break
+        return pairs

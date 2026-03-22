@@ -29,13 +29,7 @@ import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parents[2]
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
-
-CLASS_ID_TO_NAME = {
-    0: "screw",
-    1: "missing_screw",
-    2: "missing_component",
-}
+from src.common.constants import CLASS_NAMES as CLASS_ID_TO_NAME, IMAGE_EXTS
 
 
 def parse_args() -> argparse.Namespace:

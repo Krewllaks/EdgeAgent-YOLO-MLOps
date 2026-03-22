@@ -25,7 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-import yaml
+from src.common.config import load_section
 
 logger = logging.getLogger(__name__)
 
@@ -37,20 +37,13 @@ class MQTTBridge:
     """MQTT bridge for factory-floor communication."""
 
     def __init__(self, config_path: Path = DEFAULT_CONFIG):
-        self._config = self._load_config(config_path)
+        cfg = load_section("mqtt", config_path)
+        self._config = cfg or {"broker": "localhost", "port": 1883, "topic_prefix": "edgeagent/factory"}
         self._client = None
         self._connected = False
         self._control_callback: Optional[Callable] = None
         self._sim_thread: Optional[threading.Thread] = None
         self._sim_stop = threading.Event()
-
-    @staticmethod
-    def _load_config(path: Path) -> dict:
-        if path.exists():
-            with open(path, encoding="utf-8") as f:
-                cfg = yaml.safe_load(f)
-            return cfg.get("mqtt", {})
-        return {"broker": "localhost", "port": 1883, "topic_prefix": "edgeagent/factory"}
 
     @property
     def broker(self) -> str:

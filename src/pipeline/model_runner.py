@@ -45,7 +45,7 @@ class PredictionResult:
     model_id: str
 
 
-CLASS_NAMES = {0: "screw", 1: "missing_screw", 2: "missing_component"}
+from src.common.constants import CLASS_NAMES
 
 
 class ModelRunner(ABC):

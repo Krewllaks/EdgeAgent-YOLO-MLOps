@@ -128,8 +128,9 @@ def _is_process_running(pid: int) -> bool:
 
 def run_inference(config: dict, args):
     """
-    Uretim modu: Pipeline + HMI + Watchdog + ShiftLogger + OPC-UA.
+    Uretim modu: Pipeline + HMI + Watchdog.
     Fabrikada 7/24 calisan ana mod.
+    Opsiyonel: ShiftLogger, OPC-UA, MQTT (config'de enabled ise)
     """
     logger = logging.getLogger("edgeagent.inference")
     shutdown_event = threading.Event()
@@ -374,7 +375,7 @@ def validate_environment(mode: str) -> list:
             import torch
             if torch.cuda.is_available():
                 gpu_name = torch.cuda.get_device_name(0)
-                vram_gb = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+                vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
                 logging.getLogger("edgeagent").info(
                     f"GPU: {gpu_name} ({vram_gb:.1f} GB VRAM)"
                 )

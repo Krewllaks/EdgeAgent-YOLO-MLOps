@@ -23,7 +23,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-CLASS_NAMES = ["screw", "missing_screw", "missing_component"]
+from src.common.constants import CLASS_NAMES_LIST as CLASS_NAMES
 
 
 # ── Data Structures ──────────────────────────────────────────────

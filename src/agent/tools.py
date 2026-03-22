@@ -17,7 +17,7 @@ from typing import Optional
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-CLASS_NAMES = {0: "screw", 1: "missing_screw", 2: "missing_component"}
+from src.common.constants import CLASS_NAMES
 
 
 # ── Tool Registry ────────────────────────────────────────────────

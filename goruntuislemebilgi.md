@@ -1,7 +1,7 @@
 # EdgeAgent-YOLO-MLOps — Proje Bilgi Dokumani
 
-Tarih: 2026-03-21
-Durum: Faz 0-2 tamamlandi, uretim pipeline'i hazir
+Tarih: 2026-03-22
+Durum: Faz 0-2 tamamlandi, uretim pipeline'i hazir, kod kalitesi refactoring tamamlandi
 
 ---
 
@@ -142,6 +142,39 @@ python src/ui/production_hmi.py --no-pipeline
 | **Coklu kullanici** | Tek | Birden fazla (web) | Birden fazla (web) |
 | **7/24 uygun** | Hayir | Evet | — |
 | **Amac** | Anla, test et, demo goster | Fabrika uretime koy | Arayuzu gelistir/test et |
+
+### 2.5 Docker Deployment (Fabrika Modu)
+
+**Amac:** Tum sistemi tek komutla ayaga kaldirmak. GPU destekli container.
+
+```bash
+# Baslatma
+docker compose -f deploy/docker-compose.yml up -d
+
+# Loglar
+docker compose -f deploy/docker-compose.yml logs -f
+
+# Durdurma
+docker compose -f deploy/docker-compose.yml down
+
+# MQTT broker ile (opsiyonel)
+docker compose -f deploy/docker-compose.yml --profile mqtt up -d
+
+# Surekli egitim (tek seferlik)
+docker compose -f deploy/docker-compose.yml --profile training run --rm trainer
+```
+
+**Gereksinimler:**
+- Docker Desktop + WSL2
+- NVIDIA Container Toolkit (`nvidia-ctk`)
+- `docker compose` v2+
+
+**Volume mount'lar (rebuild gereksiz):**
+- `models/` — Model hot-swap
+- `configs/` — Konfigurasyon degisiklikleri
+- `data/audit/` — Audit loglari
+- `data/feedback/` — Operator geri bildirimleri
+- `logs/` — Uygulama loglari
 
 ---
 
@@ -368,7 +401,21 @@ IEC 62541 uyumlu endustriyel protokol:
 - Yayinlanan degiskenler: LastVerdict, Confidence, TotalInspected, QualityRate, ModelVersion, SystemHealthy
 - `opc.tcp://0.0.0.0:4840/edgeagent` adresinde calisir
 
-### 7.10 Surekli Egitim
+### 7.10 VLM Pseudo-Labeler (CT Veri Uretimi)
+**Dosya:** `src/mlops/vlm_labeler.py`
+
+VLM'i sadece belirsiz kare analizi icin degil, surekli egitim icin veri uretmek icin kullanir:
+- Belirsiz kareleri VLM ile analiz eder
+- YOLO formatinda bbox pseudo-label uretir
+- CT-ready havuza ihrac eder (`data/ct_ready/`)
+
+```bash
+python src/mlops/vlm_labeler.py --label-all   # Tum belirsiz kareleri etiketle
+python src/mlops/vlm_labeler.py --export-ct    # CT havuzuna ihrac et
+python src/mlops/vlm_labeler.py --status       # Durum raporu
+```
+
+### 7.11 Surekli Egitim
 **Dosya:** `src/mlops/continuous_trainer.py`
 
 Kosul bazli otomatik retrain + shadow deployment:
@@ -499,6 +546,8 @@ python scripts/export_onnx.py --model models/phase1_final_ca.pt --half
 | `configs/production_config.yaml` | Uretim yapilandirmasi (kamera, model, pipeline, MQTT, OPC-UA, watchdog, vardiya) |
 | `configs/camera_config.yaml` | Kamera ayarlari (tip, cozunurluk, FPS, trigger modu) |
 | `configs/rules.yaml` | Urun bazli dinamik kurallar |
+| `pyproject.toml` | Ruff linter + pytest ayarlari |
+| `deploy/docker-compose.yml` | Docker production stack (GPU destekli) |
 
 ---
 
@@ -507,6 +556,9 @@ python scripts/export_onnx.py --model models/phase1_final_ca.pt --half
 ```
 Goruntuisleme/
 |
+|-- pyproject.toml                         # Ruff linter + pytest konfigurasyon
+|-- main.py                                # Docker/servis entry point
+|
 |-- configs/
 |   |-- models/yolov10s_ca.yaml           # YOLOv10-S + CA model konfig
 |   |-- phase2_config.yaml                # VLM, queue, drift, AL, MQTT
@@ -514,21 +566,28 @@ Goruntuisleme/
 |   |-- camera_config.yaml                # Kamera ayarlari
 |   |-- rules.yaml                        # Dinamik kurallar
 |
+|-- deploy/
+|   |-- Dockerfile                        # NVIDIA CUDA 12.1 tabanli container
+|   |-- docker-compose.yml                # GPU destekli production stack
+|   |-- mosquitto.conf                    # MQTT broker konfig (opsiyonel)
+|
 |-- scripts/
 |   |-- check_gpu.py                      # GPU/CUDA dogrulama
 |   |-- export_tensorrt.py                # TensorRT FP16/INT8 export
 |   |-- export_onnx.py                    # ONNX export (platform bagimsiz)
-|   |-- prepare_phase1_dataset.py         # Roboflow COCO -> YOLO donusum
-|   |-- prepare_v2_dataset.py             # V2 dataset
-|   |-- prepare_v4_dataset.py             # V4 dataset (tum kaynaklar)
 |   |-- prepare_production_dataset.py     # Uretim dataseti (%60/20/20)
-|   |-- prepare_v3_copypaste.py           # Copy-paste augmentation
 |   |-- train_final_phase1.py             # YOLO egitim + rapor
 |   |-- generate_vlm_captions.py          # VLM caption uretimi
-|   |-- backfill_mlflow.py                # MLflow gecmis kayit
-|   |-- start_mlflow_server.py            # MLflow sunucusu
+|   |-- audit_assets.py                   # Varlik dogrulama
+|   |-- deprecated/                       # Eski scriptler (soyagaci icin)
+|   |   |-- train_yolo.py                # train_final_phase1.py ile degistirildi
+|   |   |-- infer_yolo.py                # model_runner.py ile degistirildi
 |
 |-- src/
+|   |-- common/                           # Paylasilan sabitler ve yardimcilar
+|   |   |-- constants.py                  # CLASS_NAMES, IMAGE_EXTS, PROJECT_ROOT (DRY)
+|   |   |-- config.py                     # Merkezi YAML config yukleme
+|   |
 |   |-- camera/
 |   |   |-- capture.py                    # Kamera soyutlama (USB/RTSP/GigE/File/Mock)
 |   |
@@ -547,7 +606,7 @@ Goruntuisleme/
 |   |   |-- augment_analysis.py           # Augmentation ingestion + leakage check
 |   |   |-- edge_enhancer.py              # Canny enhancement + auto-tune
 |   |   |-- label_validator.py            # Etiket dogrulama
-|   |   |-- uncertain_collector.py        # Belirsiz kare toplama
+|   |   |-- uncertain_collector.py        # Belirsiz kare toplama + pseudo-label
 |   |   |-- vlm_augmentor.py              # VLM tabanli augmentation
 |   |
 |   |-- edge/
@@ -569,6 +628,7 @@ Goruntuisleme/
 |   |   |-- active_learning.py            # Operator feedback + retrain
 |   |   |-- drift_detector.py             # SSIM concept drift
 |   |   |-- continuous_trainer.py         # Shadow deployment + otomatik retrain
+|   |   |-- vlm_labeler.py               # VLM pseudo-label uretimi (CT icin)
 |   |
 |   |-- evaluation/
 |   |   |-- accuracy_report.py            # Model degerlendirme raporu
@@ -579,14 +639,23 @@ Goruntuisleme/
 |       |-- sprint1_dashboard.py          # Streamlit demo dashboard (9 sayfa)
 |       |-- production_hmi.py             # FastAPI uretim arayuzu
 |
+|-- tests/                                # Pytest test suite
+|   |-- test_constants.py                 # Sabit degerlerin dogrulanmasi
+|   |-- test_config.py                    # Config loader testleri
+|   |-- test_spatial_logic.py             # Mekansal analiz senaryolari
+|   |-- test_conflict_resolver.py         # Catisma cozumu karar yollari
+|   |-- test_rca_templates.py             # RCA sablon dogrulamasi
+|
 |-- models/
 |   |-- phase1_final_ca.pt                # V1 best (mAP50=0.9943)
 |   |-- registry/                         # Model versiyonlama kayitlari
 |
 |-- data/
-|   |-- processed/                        # Islenmmis YOLO dataset'leri
+|   |-- processed/                        # Islenmis YOLO dataset'leri
 |   |-- feedback/feedback_log.jsonl       # Operator geri bildirim kayitlari
 |   |-- audit/                            # Audit log dosyalari
+|   |-- uncertain/                        # Belirsiz kareler (VLM analizi icin)
+|   |-- ct_ready/                         # VLM pseudo-labeled CT verisi
 |
 |-- reports/
 |   |-- final_phase1_report.md            # Karsilastirma raporu
@@ -594,9 +663,24 @@ Goruntuisleme/
 
 ---
 
-## 16. Kurulum
+## 16. Test Suite
 
-### 16.1 Temel Kurulum
+```bash
+python -m pytest tests/ -v
+```
+
+18 test, 5 dosyada:
+- `test_constants.py` — CLASS_NAMES, IMAGE_EXTS, PROJECT_ROOT dogrulamasi
+- `test_config.py` — YAML config loader (mevcut/olmayan dosya)
+- `test_spatial_logic.py` — K-means kumeleme + karar matrisi (3 senaryo + empty)
+- `test_conflict_resolver.py` — Consensus ve fail-safe karar yollari
+- `test_rca_templates.py` — 10 RCA sablonunun varlik ve icerik kontrolu
+
+---
+
+## 17. Kurulum
+
+### 17.1 Temel Kurulum
 ```bash
 python -m venv .venv
 .venv\Scripts\activate        # Windows
@@ -604,7 +688,7 @@ pip install -r requirements.txt
 python scripts/check_gpu.py   # GPU dogrulama
 ```
 
-### 16.2 Bagimliliklarin Ozeti
+### 17.2 Bagimliliklarin Ozeti
 | Paket | Amac |
 |-------|------|
 | ultralytics >= 8.4.0 | YOLOv10 egitim/inference |
@@ -620,7 +704,7 @@ python scripts/check_gpu.py   # GPU dogrulama
 
 ---
 
-## 17. Fabrikadaki Mevcut Uygulama vs Bizim Sistem
+## 18. Fabrikadaki Mevcut Uygulama vs Bizim Sistem
 
 `erdogan2/MLOps Calismalari/Codes/` altinda fabrikada kullanilan uygulama var:
 
@@ -648,7 +732,7 @@ python scripts/check_gpu.py   # GPU dogrulama
 
 ---
 
-## 18. Teknik Kararlar
+## 19. Teknik Kararlar
 
 ### Neden YOLOv10-S + Coordinate Attention?
 - v10 NMS-free = dusuk latency, CA pozisyon bilgisi korur (vida lokasyonu icin kritik)
@@ -673,7 +757,7 @@ python scripts/check_gpu.py   # GPU dogrulama
 
 ---
 
-## 19. Sorun Giderme
+## 20. Sorun Giderme
 
 | Sorun | Cozum |
 |-------|-------|
@@ -689,7 +773,7 @@ python scripts/check_gpu.py   # GPU dogrulama
 
 ---
 
-## 20. Proje Durumu
+## 21. Proje Durumu
 
 | Faz | Durum | Aciklama |
 |-----|-------|----------|
@@ -702,7 +786,7 @@ python scripts/check_gpu.py   # GPU dogrulama
 
 ---
 
-## 21. Gitignore'daki Buyuk Dosyalar
+## 22. Gitignore'daki Buyuk Dosyalar
 
 Repo'da YER ALMAYAN buyuk/yerel dosyalar:
 - `erdogan1/`, `erdogan2/`, `coklanmis/`, `coklanmisacili/`, `coklanmis1000/`, `coklanmisyeni/`, `roboflowetiketlenen/`

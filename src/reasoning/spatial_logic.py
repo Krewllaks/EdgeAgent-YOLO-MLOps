@@ -35,7 +35,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 
-CLASS_NAMES = {0: "screw", 1: "missing_screw", 2: "missing_component"}
+from src.common.constants import CLASS_NAMES
 CLASS_IDS = {"screw": 0, "missing_screw": 1, "missing_component": 2}
 
 

@@ -49,6 +49,8 @@ data/external/
 data/feedback/
 data/augmented/
 data/audit/
+data/uncertain/
+data/ct_ready/
 
 # Local agent workspace
 .claude/

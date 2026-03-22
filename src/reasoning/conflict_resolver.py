@@ -21,8 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import yaml
-
+from src.common.config import load_section
 from src.reasoning.rca_templates import get_rca
 
 logger = logging.getLogger(__name__)
@@ -47,15 +46,7 @@ class ConflictResolver:
     """Resolves conflicts between YOLO, Spatial Logic, and VLM."""
 
     def __init__(self, config_path: Path = DEFAULT_CONFIG):
-        self._config = self._load_config(config_path)
-
-    @staticmethod
-    def _load_config(path: Path) -> dict:
-        if path.exists():
-            with open(path, encoding="utf-8") as f:
-                cfg = yaml.safe_load(f)
-            return cfg.get("conflict_resolver", {})
-        return {}
+        self._config = load_section("conflict_resolver", config_path)
 
     @staticmethod
     def _extract_yolo_verdict(detections: list[dict]) -> tuple[str, float]:

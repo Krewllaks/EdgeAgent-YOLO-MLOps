@@ -75,7 +75,7 @@ class Watchdog:
             import torch
             if torch.cuda.is_available():
                 mem_used = torch.cuda.memory_allocated() / 1024**2
-                mem_total = torch.cuda.get_device_properties(0).total_mem / 1024**2
+                mem_total = torch.cuda.get_device_properties(0).total_memory / 1024**2
                 # Sicaklik (nvidia-smi uzerinden)
                 try:
                     import subprocess
@@ -166,8 +166,8 @@ class Watchdog:
             for cb in self._alert_callbacks:
                 try:
                     cb(status)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Alert callback hatasi: %s", e)
 
         return status
 
@@ -192,8 +192,8 @@ class Watchdog:
                             "edgeagent/factory/health",
                             json.dumps(asdict(self._last_status), default=str),
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("MQTT health publish hatasi: %s", e)
 
             except Exception as e:
                 logger.error(f"Watchdog kontrol hatasi: {e}")

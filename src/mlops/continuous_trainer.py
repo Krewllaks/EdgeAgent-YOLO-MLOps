@@ -145,16 +145,33 @@ class ContinuousTrainer:
         """Run the full retrain cycle.
 
         Steps:
-        1. Prepare new dataset version with augmented data
-        2. Run YOLO training
-        3. Save results and update history
+        1. VLM ile belirsiz karelere pseudo-label uret
+        2. CT-ready veriyi + augmentation ile dataset olustur
+        3. YOLO egitimi calistir
+        4. Sonuclari kaydet
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         version = f"retrain_{timestamp}"
 
         try:
+            # Step 0: VLM pseudo-labeling (belirsiz karelere label uret)
+            print("[0/5] VLM ile belirsiz kareler etiketleniyor...")
+            try:
+                from src.mlops.vlm_labeler import VLMLabeler
+                labeler = VLMLabeler()
+                pseudo_results = labeler.label_all_uncertain(max_frames=50)
+                print(f"       {len(pseudo_results)} kare VLM ile etiketlendi")
+
+                # CT-ready veriyi ihrac et
+                ct_export = labeler.export_for_ct()
+                ct_count = ct_export.get("exported", 0)
+                print(f"       {ct_count} goruntu CT havuzuna aktarildi")
+            except Exception as e:
+                print(f"       VLM labeling atlandi: {e}")
+                ct_count = 0
+
             # Step 1: Prepare dataset
-            print(f"[1/4] Dataset hazirlaniyor (augment={num_augmented})...")
+            print(f"[1/5] Dataset hazirlaniyor (augment={num_augmented})...")
             dataset_dir = ROOT / "data" / "processed" / version
 
             # Use copy-paste augmentation
@@ -168,6 +185,22 @@ class ContinuousTrainer:
             result = subprocess.run(
                 prepare_cmd, capture_output=True, text=True, cwd=str(ROOT),
             )
+
+            # Step 1.5: CT-ready veriyi train setine ekle
+            if ct_count > 0:
+                print(f"[1.5/5] {ct_count} VLM-labeled goruntu train setine ekleniyor...")
+                ct_dir = ROOT / "data" / "ct_ready"
+                train_img = dataset_dir / "train" / "images"
+                train_lbl = dataset_dir / "train" / "labels"
+                if train_img.exists() and (ct_dir / "images").exists():
+                    import shutil
+                    for img in (ct_dir / "images").iterdir():
+                        if img.suffix.lower() in {".jpg", ".jpeg", ".png"}:
+                            shutil.copy2(img, train_img / img.name)
+                    for lbl in (ct_dir / "labels").iterdir():
+                        if lbl.suffix == ".txt":
+                            shutil.copy2(lbl, train_lbl / lbl.name)
+
             if result.returncode != 0:
                 return RetrainResult(
                     success=False, timestamp=timestamp,
@@ -178,7 +211,7 @@ class ContinuousTrainer:
                 )
 
             # Step 2: Train
-            print(f"[2/4] Model egitiliyor ({epochs} epoch)...")
+            print(f"[2/5] Model egitiliyor ({epochs} epoch)...")
             data_yaml = dataset_dir / "data.yaml"
             if not data_yaml.exists():
                 # Fallback
@@ -201,7 +234,7 @@ class ContinuousTrainer:
             )
 
             # Step 3: Check results
-            print("[3/4] Sonuclar kontrol ediliyor...")
+            print("[3/5] Sonuclar kontrol ediliyor...")
             model_path = ROOT / "models" / "phase1_final_ca.pt"
             metrics = {}
 
@@ -218,7 +251,7 @@ class ContinuousTrainer:
                             pass
 
             # Step 4: Log result
-            print("[4/4] Sonuclar kaydediliyor...")
+            print("[4/5] Sonuclar kaydediliyor...")
             retrain_result = RetrainResult(
                 success=result.returncode == 0,
                 timestamp=timestamp,

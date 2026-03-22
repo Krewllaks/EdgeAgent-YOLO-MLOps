@@ -59,6 +59,10 @@ continuous_training:
   ssim_drift_threshold: 0.15
   retrain_augmented_count: 1000
   auto_deploy: false        # true = otomatik hot-swap, false = operator onayi gerekli
+  vlm_labeling:
+    enabled: true           # Belirsiz karelere VLM ile pseudo-label uret
+    max_frames_per_cycle: 50  # Tek seferde max etiketlenecek kare
+    min_days_between_retrain: 1.0
 
 audit:
   log_dir: "data/audit"

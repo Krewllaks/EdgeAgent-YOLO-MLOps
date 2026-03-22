@@ -34,10 +34,8 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    depends_on:
-      - mosquitto
 
-  # ── MQTT Broker ───────────────────────────────────────────
+  # ── MQTT Broker (opsiyonel — fabrika entegrasyonu icin) ──
   mosquitto:
     image: eclipse-mosquitto:2
     container_name: edgeagent-mqtt
@@ -46,6 +44,7 @@ services:
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
     restart: unless-stopped
+    profiles: ["mqtt"]
 
   # ── Surekli Egitim (istege bagli) ────────────────────────
   trainer:

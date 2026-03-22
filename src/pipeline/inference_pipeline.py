@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import yaml
+
+from src.common.config import load_yaml
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +85,7 @@ class InferencePipeline:
     @classmethod
     def from_config(cls, config_path: str) -> "InferencePipeline":
         """YAML config'den pipeline olustur."""
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
+        config = load_yaml(Path(config_path))
         return cls(config)
 
     def _init_modules(self):
@@ -99,14 +99,26 @@ class InferencePipeline:
         cam_type = cam_cfg.get("type", "usb")
         self._camera = create_camera(cam_type, **{k: v for k, v in cam_cfg.items() if k != "type"})
         if not self._camera.connect():
-            raise RuntimeError("Kamera baglantisi basarisiz")
+            logger.warning("Kamera baglantisi basarisiz — MockCamera'ya fallback")
+            from src.camera.capture import MockCamera, CameraConfig
+            self._camera = MockCamera(CameraConfig(camera_type="mock"))
+            self._camera.connect()
+            self._camera_degraded = True
+        else:
+            self._camera_degraded = False
 
         # Model (champion)
         from src.pipeline.model_runner import create_model_runner
         model_path = model_cfg.get("path", "models/phase1_final_ca.pt")
-        self._model = create_model_runner(model_path)
-        if not self._model.load():
-            raise RuntimeError(f"Model yuklenemedi: {model_path}")
+        if not Path(model_path).exists():
+            logger.warning(f"Model dosyasi bulunamadi: {model_path} — pipeline demo modunda")
+            self._model = None
+            self._model_degraded = True
+        else:
+            self._model = create_model_runner(model_path)
+            if not self._model.load():
+                raise RuntimeError(f"Model yuklenemedi: {model_path}")
+            self._model_degraded = False
 
         # Challenger model (shadow mode)
         challenger_path = model_cfg.get("challenger_path")
@@ -167,7 +179,11 @@ class InferencePipeline:
         imgsz = pipeline_cfg.get("imgsz", 640)
 
         # ── YOLO Inference ─────────────────────────────────────
-        result = self._model.predict(frame, conf=conf_threshold, imgsz=imgsz)
+        if self._model is None:
+            from src.pipeline.model_runner import PredictionResult
+            result = PredictionResult(detections=[], inference_ms=0.0, frame_shape=frame.shape)
+        else:
+            result = self._model.predict(frame, conf=conf_threshold, imgsz=imgsz)
 
         # ── Spatial Logic ──────────────────────────────────────
         spatial_decision = "unknown"
@@ -185,7 +201,7 @@ class InferencePipeline:
                 spatial_result = self._spatial.analyze_frame(boxes)
                 spatial_decision = spatial_result.get("decision", "unknown")
             except Exception as e:
-                logger.debug(f"Spatial logic hatasi: {e}")
+                logger.warning("Spatial logic hatasi: %s", e)
 
         # ── VLM Trigger Check ─────────────────────────────────
         vlm_triggered = False
@@ -197,8 +213,8 @@ class InferencePipeline:
                     frame, [{"class_id": d.class_id, "confidence": d.confidence,
                              "bbox": list(d.bbox_xywhn)} for d in result.detections]
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("UncertainCollector: %s", e)
 
         # ── Conflict Resolution ───────────────────────────────
         final_verdict = "OK"
@@ -222,7 +238,7 @@ class InferencePipeline:
                 confidence = verdict.confidence
                 rca_text = getattr(verdict, "rca_text", "")
             except Exception as e:
-                logger.debug(f"Conflict resolver hatasi: {e}")
+                logger.warning("Conflict resolver hatasi: %s", e)
                 # Fallback: YOLO'nun kararini kullan
                 for d in result.detections:
                     if d.class_id in (1, 2):
@@ -246,8 +262,8 @@ class InferencePipeline:
                     if d.class_id in (1, 2):
                         challenger_verdict = d.class_name
                         break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Shadow mode hatasi: %s", e)
 
         # ── MQTT Publish ──────────────────────────────────────
         if self._mqtt:
@@ -260,8 +276,8 @@ class InferencePipeline:
                     "inference_ms": round(result.inference_ms, 2),
                     "timestamp": datetime.now().isoformat(),
                 }))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("MQTT publish hatasi: %s", e)
 
         # ── Stats ─────────────────────────────────────────────
         self._stats.total_frames += 1
@@ -301,8 +317,8 @@ class InferencePipeline:
         if self._audit_logger:
             try:
                 self._audit_logger.log_event(event)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Audit log hatasi: %s", e)
 
         return event
 
@@ -325,8 +341,8 @@ class InferencePipeline:
             for cb in self._event_callbacks:
                 try:
                     cb(event)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Callback hatasi: %s", e)
 
         logger.info("Inference dongusu durduruldu")
 
