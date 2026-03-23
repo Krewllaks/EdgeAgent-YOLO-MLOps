@@ -22,7 +22,7 @@ accelerate==1.12.0
 
 # MLOps & Edge
 paho-mqtt==2.1.0
-scikit-image==0.26.0
+scikit-image==0.25.2
 
 # Production Pipeline
 onnxruntime-gpu==1.23.2

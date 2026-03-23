@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 COPY deploy/requirements-docker.txt /tmp/
-RUN pip install --no-cache-dir --prefix=/install -r /tmp/requirements-docker.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-docker.txt
 
 # ── Stage 2: Production ──────────────────────────────────────────
 FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
@@ -24,8 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/* && \
     ln -sf /usr/bin/python3.10 /usr/bin/python
 
-# Sadece pip paketlerini kopyala (build tool'lari gelmez)
-COPY --from=builder /install /usr/local
+# Python paketlerini builder'dan kopyala
+COPY --from=builder /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/dist-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
 WORKDIR /app
 
