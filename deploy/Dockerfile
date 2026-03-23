@@ -1,31 +1,41 @@
-# EdgeAgent — NVIDIA GPU Container
+# EdgeAgent — NVIDIA GPU Container (Multi-stage)
 # Build:  docker build -f deploy/Dockerfile -t edgeagent .
 # Run:    docker compose -f deploy/docker-compose.yml up -d
 
-FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
+# ── Stage 1: Builder ─────────────────────────────────────────────
+FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04 AS builder
 
-# System deps
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.10 python3.10-venv python3-pip \
+    python3.10 python3.10-venv python3-pip && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY deploy/requirements-docker.txt /tmp/
+RUN pip install --no-cache-dir --prefix=/install -r /tmp/requirements-docker.txt
+
+# ── Stage 2: Production ──────────────────────────────────────────
+FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 python3.10-venv \
     libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 libxrender1 \
     curl && \
     rm -rf /var/lib/apt/lists/* && \
     ln -sf /usr/bin/python3.10 /usr/bin/python
 
+# Sadece pip paketlerini kopyala (build tool'lari gelmez)
+COPY --from=builder /install /usr/local
+
 WORKDIR /app
 
-# Install Python dependencies
-COPY deploy/requirements-docker.txt .
-RUN pip install --no-cache-dir -r requirements-docker.txt
-
-# Copy application
+# Uygulama kodu
 COPY main.py .
 COPY src/ src/
 COPY configs/ configs/
 COPY scripts/ scripts/
 
-# Create data directories
+# Data dizinleri (icerik docker-compose volumes ile gelecek)
 RUN mkdir -p data/audit data/feedback data/shifts logs models/registry
 
 # Health check

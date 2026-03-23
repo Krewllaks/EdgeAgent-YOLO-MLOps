@@ -1,38 +1,38 @@
-# EdgeAgent — Docker Requirements (platform-independent)
-# Bu dosya requirements.txt'in Windows platform marker'lari temizlenmis hali.
+# EdgeAgent — Docker Requirements (pinned versions)
+# Reproducible builds icin tum versiyonlar sabitlenmistir.
 
 # Core
-numpy>=1.26
-pillow>=10.0
-pyyaml>=6.0
-tqdm>=4.66
-matplotlib>=3.8
-opencv-python>=4.10
+numpy==2.2.0
+pillow==11.3.0
+pyyaml==6.0.3
+tqdm==4.67.1
+matplotlib==3.10.8
+opencv-python==4.13.0.90
 
 # Training/inference
-ultralytics>=8.4.0
+ultralytics==8.4.21
 
 # Experiment tracking
-mlflow>=2.13
+mlflow==3.8.1
 
 # VLM reasoning
-transformers>=4.40
-bitsandbytes>=0.43
-accelerate>=0.30
+transformers==4.57.6
+bitsandbytes==0.49.1
+accelerate==1.12.0
 
 # MLOps & Edge
-paho-mqtt>=2.0
-scikit-image>=0.22
+paho-mqtt==2.1.0
+scikit-image==0.26.0
 
 # Production Pipeline
-onnxruntime-gpu>=1.17
-fastapi>=0.111
-uvicorn>=0.30
-asyncua>=1.1
-pymodbus>=3.6
+onnxruntime-gpu==1.23.2
+fastapi==0.115.6
+uvicorn==0.34.0
+asyncua==1.1.5
+pymodbus==3.7.4
 
-# PyTorch CUDA 12.1 (no platform markers for Docker)
+# PyTorch CUDA 12.1
 --extra-index-url https://download.pytorch.org/whl/cu121
-torch>=2.5.0
-torchvision>=0.20.0
-torchaudio>=2.5.0
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1

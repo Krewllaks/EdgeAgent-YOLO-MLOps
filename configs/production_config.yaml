@@ -21,6 +21,12 @@ pipeline:
   imgsz: 640
   product_name: "4_screw_component"
 
+stream:
+  enabled: true               # Canli kamera akisi (MJPEG)
+  fps_limit: 15               # Tarayiciya gonderilen max FPS
+  jpeg_quality: 80            # JPEG kalitesi (0-100)
+  frame_buffer_size: 30       # Circular buffer boyutu
+
 shadow_mode: false          # true = challenger model paralel calisir
 
 mqtt:

@@ -82,6 +82,9 @@ class InferencePipeline:
         self._uncertain_collector = None
         self._audit_logger = None
 
+        # Live stream buffer
+        self._frame_buffer = None
+
     @classmethod
     def from_config(cls, config_path: str) -> "InferencePipeline":
         """YAML config'den pipeline olustur."""
@@ -168,6 +171,14 @@ class InferencePipeline:
             self._audit_logger = AuditLogger()
         except Exception as e:
             logger.warning(f"AuditLogger yuklenemedi: {e}")
+
+        # Live Stream Buffer
+        stream_cfg = self.config.get("stream", {})
+        if stream_cfg.get("enabled", True):
+            from src.pipeline.frame_buffer import FrameBuffer
+            buf_size = stream_cfg.get("frame_buffer_size", 30)
+            self._frame_buffer = FrameBuffer(maxlen=buf_size)
+            logger.info(f"Live stream buffer baslatildi (size={buf_size})")
 
         logger.info("Tum moduller baslatildi")
 
@@ -313,6 +324,22 @@ class InferencePipeline:
             challenger_verdict=challenger_verdict,
         )
 
+        # ── Live Stream Buffer ────────────────────────────────
+        if self._frame_buffer is not None:
+            try:
+                from src.ui.stream_utils import annotate_frame
+                from src.pipeline.frame_buffer import AnnotatedFrame
+                annotated = annotate_frame(frame, result.detections, final_verdict)
+                self._frame_buffer.put(AnnotatedFrame(
+                    frame=annotated,
+                    frame_id=frame_id,
+                    timestamp=time.time(),
+                    verdict=final_verdict,
+                    detection_count=len(result.detections),
+                ))
+            except Exception as e:
+                logger.debug("Frame buffer hatasi: %s", e)
+
         # ── Audit Log ─────────────────────────────────────────
         if self._audit_logger:
             try:
@@ -376,6 +403,11 @@ class InferencePipeline:
         if not self._model or not self._model.is_loaded:
             self._init_modules()
         return self._process_frame(frame, 0)
+
+    @property
+    def frame_buffer(self):
+        """Live stream frame buffer (None = stream devre disi)."""
+        return self._frame_buffer
 
     def get_stats(self) -> PipelineStats:
         """Guncel istatistikleri getir."""

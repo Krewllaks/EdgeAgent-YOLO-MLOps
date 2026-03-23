@@ -22,6 +22,7 @@ API Endpoints:
     GET  /api/shift  — Vardiya raporu
     GET  /api/health — Sistem sagligi
     GET  /api/recent — Son N karar
+    GET  /api/stream — Canli kamera akisi (MJPEG, bbox overlay)
     POST /api/feedback — Operator geri bildirimi
     POST /api/model/swap — Model degistir (hot-swap)
 """
@@ -39,7 +40,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -151,6 +152,28 @@ async def get_health():
             "frames_processed": stats.total_frames,
             "uptime_seconds": round(stats.uptime_seconds, 1),
         }
+
+        # Kamera durumu
+        camera_degraded = getattr(_pipeline, "_camera_degraded", False)
+        health["checks"]["camera"] = {
+            "ok": not camera_degraded,
+            "msg": "MockCamera (degraded)" if camera_degraded else "Bagli",
+        }
+
+        # Model durumu
+        model_degraded = getattr(_pipeline, "_model_degraded", False)
+        health["checks"]["model"] = {
+            "ok": not model_degraded,
+            "msg": "Yuklenmedi (demo modu)" if model_degraded else "Yuklendi",
+        }
+
+        # Stream durumu
+        fb = _pipeline.frame_buffer
+        if fb is not None:
+            health["checks"]["stream"] = {
+                "ok": fb.has_frames,
+                "msg": f"{fb.size} frame buffer" if fb.has_frames else "Frame bekleniyor",
+            }
     else:
         health["checks"]["pipeline"] = {"ok": False, "msg": "Pipeline calismiyor"}
 
@@ -244,6 +267,23 @@ async def model_swap(request: Request):
             status_code=500,
             content={"status": "error", "message": str(e)},
         )
+
+
+# ── Live Camera Stream ───────────────────────────────────────────
+
+@app.get("/api/stream")
+async def video_stream():
+    """Canli kamera akisi (MJPEG) — bbox + verdict overlay."""
+    if not _pipeline or not _pipeline.frame_buffer:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Kamera akisi mevcut degil"},
+        )
+    from src.ui.stream_utils import mjpeg_generator
+    return StreamingResponse(
+        mjpeg_generator(_pipeline.frame_buffer, fps_limit=15, quality=80),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
 
 
 # ── Event Handler ────────────────────────────────────────────────
@@ -480,6 +520,22 @@ def _render_html() -> str:
             </div>
         </div>
 
+        <!-- Canli Kamera -->
+        <div class="card full-width">
+            <h2>Canli Kamera</h2>
+            <div id="stream-container" style="position:relative; text-align:center;">
+                <img id="live-stream" src="/api/stream"
+                     style="width:100%; max-height:480px; border-radius:8px; object-fit:contain; display:block; margin:0 auto;"
+                     onerror="this.style.display='none'; document.getElementById('no-stream').style.display='block';">
+                <div id="no-stream" style="display:none; text-align:center; padding:40px; color:#888;">
+                    Kamera akisi bekleniyor...
+                </div>
+            </div>
+            <div style="margin-top:8px; display:flex; gap:12px; justify-content:center;">
+                <button class="btn" style="background:#0f3460; color:#eee;" onclick="toggleStream()">Akisi Baslat / Durdur</button>
+            </div>
+        </div>
+
         <!-- Vardiya Bilgisi -->
         <div class="card two-col">
             <h2>Vardiya Bilgisi</h2>
@@ -693,6 +749,25 @@ def _render_html() -> str:
             } catch(e) {
                 msg.textContent = 'Hata: ' + e.message;
                 msg.style.color = '#e17055';
+            }
+        }
+
+        // Canli kamera toggle
+        let streamActive = true;
+        function toggleStream() {
+            const img = document.getElementById('live-stream');
+            const noStream = document.getElementById('no-stream');
+            if (streamActive) {
+                img.src = '';
+                img.style.display = 'none';
+                noStream.style.display = 'block';
+                noStream.textContent = 'Akis durduruldu';
+                streamActive = false;
+            } else {
+                img.src = '/api/stream';
+                img.style.display = 'block';
+                noStream.style.display = 'none';
+                streamActive = true;
             }
         }
 

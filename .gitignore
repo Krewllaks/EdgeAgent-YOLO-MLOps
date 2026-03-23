@@ -32,6 +32,7 @@ Thumbs.db
 # Env and secrets
 .env
 .env.*
+!.env.example
 
 # Local datasets (large/private - do not commit)
 erdogan1/

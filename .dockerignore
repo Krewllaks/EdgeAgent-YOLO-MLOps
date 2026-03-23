@@ -1,0 +1,34 @@
+# Training data — Docker image'a dahil edilmemeli
+erdogan*/
+roboflowetiketlenen/
+coklanmis*/
+data/
+models/
+runs/
+mlruns/
+mlflow.db
+logs/
+
+# Dev artifacts
+.git/
+.github/
+.claude/
+tests/
+docs/
+reports/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Model weights (docker-compose volumes ile gelecek)
+*.pt
+*.onnx
+*.engine
+
+# Misc
+dosya_yapisi.txt
+goruntuislemebilgi.md
+*.ipynb
+.env*
+!.env.example
